@@ -1,0 +1,246 @@
+// Shareable — Prisma schema
+// Fuente: CLAUDE.md, sección 4 (esquema PostgreSQL).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  active
+  suspended
+}
+
+enum RequestStatus {
+  pending
+  accepted
+  rejected
+  handed_over_by_owner
+  received_by_borrower
+  in_progress
+  returned_by_borrower
+  received_back_by_owner
+  completed
+}
+
+enum WantedItemStatus {
+  open
+  fulfilled
+  cancelled
+}
+
+enum UserRole {
+  user
+  admin
+}
+
+model User {
+  id            String     @id @default(uuid()) @db.Uuid
+  email         String     @unique @db.VarChar(255)
+  emailVerified DateTime?  @map("email_verified") @db.Timestamp(6)
+  name          String?    @map("full_name") @db.VarChar(255)
+  image         String?    @map("avatar_url")
+  passwordHash  String?    @map("password_hash")
+  bio           String?    @db.VarChar(280)
+  status        UserStatus @default(active)
+  role          UserRole   @default(user)
+  createdAt     DateTime   @default(now()) @map("created_at") @db.Timestamp(6)
+
+  accounts           Account[]
+  sessions           Session[]
+  items              Item[]       @relation("OwnerItems")
+  requestsAsBorrower Request[]    @relation("BorrowerRequests")
+  reportsFiled       Report[]     @relation("ReporterReports")
+  messages           Message[]    @relation("SenderMessages")
+  wantedItems        WantedItem[] @relation("UserWantedItems")
+  ratingsReceived    UserRating[] @relation("RatingsReceived")
+  ratingsGiven       UserRating[] @relation("RatingsGiven")
+
+  @@map("users")
+}
+
+// --- NextAuth (Auth.js) Prisma adapter models ---
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id") @db.Uuid
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id") @db.Uuid
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model Item {
+  id             String   @id @default(uuid()) @db.Uuid
+  ownerId        String   @map("owner_id") @db.Uuid
+  title          String   @db.VarChar(255)
+  description    String
+  category       String   @db.VarChar(100)
+  pricePerDay    Decimal  @default(0) @map("price_per_day") @db.Decimal(10, 2)
+  depositAmount  Decimal  @default(0) @map("deposit_amount") @db.Decimal(10, 2)
+  latitude       Float
+  longitude      Float
+  isActive       Boolean  @default(true) @map("is_active")
+
+  owner    User              @relation("OwnerItems", fields: [ownerId], references: [id], onDelete: Cascade)
+  requests Request[]
+  matches  WantedItemMatch[]
+  images   ItemImage[]
+
+  @@index([ownerId])
+  @@map("items")
+}
+
+model ItemImage {
+  id        String   @id @default(uuid()) @db.Uuid
+  itemId    String   @map("item_id") @db.Uuid
+  url       String
+  position  Int
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, position])
+  @@index([itemId])
+  @@map("item_images")
+}
+
+model Request {
+  id         String        @id @default(uuid()) @db.Uuid
+  itemId     String        @map("item_id") @db.Uuid
+  borrowerId String        @map("borrower_id") @db.Uuid
+  status     RequestStatus @default(pending)
+  startDate  DateTime?     @map("start_date") @db.Date
+  endDate    DateTime?     @map("end_date") @db.Date
+  createdAt  DateTime      @default(now()) @map("created_at") @db.Timestamp(6)
+
+  item     Item         @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  borrower User         @relation("BorrowerRequests", fields: [borrowerId], references: [id], onDelete: Cascade)
+  reports  Report[]
+  messages Message[]
+  ratings  UserRating[]
+
+  @@index([itemId])
+  @@index([borrowerId])
+  @@map("requests")
+}
+
+model Report {
+  id         String   @id @default(uuid()) @db.Uuid
+  requestId  String   @map("request_id") @db.Uuid
+  reporterId String   @map("reporter_id") @db.Uuid
+  reason     String
+  isResolved Boolean  @default(false) @map("is_resolved")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  request  Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  reporter User    @relation("ReporterReports", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([requestId])
+  @@index([isResolved, createdAt])
+  @@map("reports")
+}
+
+model WantedItem {
+  id             String           @id @default(uuid()) @db.Uuid
+  requesterId    String           @map("requester_id") @db.Uuid
+  title          String           @db.VarChar(120)
+  description    String?
+  category       String           @db.VarChar(100)
+  maxPricePerDay Decimal?         @map("max_price_per_day") @db.Decimal(10, 2)
+  latitude       Float
+  longitude      Float
+  radiusM        Int              @default(2000) @map("radius_m")
+  status         WantedItemStatus @default(open)
+  expiresAt      DateTime?        @map("expires_at") @db.Timestamp(6)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamp(6)
+
+  requester User              @relation("UserWantedItems", fields: [requesterId], references: [id], onDelete: Cascade)
+  matches   WantedItemMatch[]
+
+  @@index([status, category])
+  @@index([requesterId])
+  @@map("wanted_items")
+}
+
+model WantedItemMatch {
+  id           String    @id @default(uuid()) @db.Uuid
+  wantedItemId String    @map("wanted_item_id") @db.Uuid
+  itemId       String    @map("item_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  seenAt       DateTime? @map("seen_at") @db.Timestamp(6)
+
+  wantedItem WantedItem @relation(fields: [wantedItemId], references: [id], onDelete: Cascade)
+  item       Item       @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([wantedItemId, itemId])
+  @@index([wantedItemId, seenAt])
+  @@map("wanted_item_matches")
+}
+
+model Message {
+  id        String   @id @default(uuid()) @db.Uuid
+  requestId String   @map("request_id") @db.Uuid
+  senderId  String   @map("sender_id") @db.Uuid
+  content   String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  request Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  sender  User    @relation("SenderMessages", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([requestId, createdAt])
+  @@map("messages")
+}
+
+model UserRating {
+  id          String   @id @default(uuid()) @db.Uuid
+  ratedUserId String   @map("rated_user_id") @db.Uuid
+  raterUserId String   @map("rater_user_id") @db.Uuid
+  requestId   String   @map("request_id") @db.Uuid
+  stars       Int
+  comment     String?  @db.VarChar(500)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  rated   User    @relation("RatingsReceived", fields: [ratedUserId], references: [id], onDelete: Cascade)
+  rater   User    @relation("RatingsGiven", fields: [raterUserId], references: [id], onDelete: Cascade)
+  request Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, raterUserId])
+  @@index([ratedUserId])
+  @@map("user_ratings")
+}
