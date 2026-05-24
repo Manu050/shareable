@@ -33,9 +33,18 @@ const ACTIVE_STATUSES: RequestStatus[] = [
   "received_back_by_owner",
 ];
 
+// Estados que el usuario suele necesitar a mano: activos + pendientes de
+// rating. Lo demás (rejected, completed ya valorado) se va al histórico.
+const HISTORY_STATUSES: RequestStatus[] = ["rejected"];
+
 function isActive(s: RequestStatus) {
   return ACTIVE_STATUSES.includes(s);
 }
+
+// Tope del histórico en la vista por defecto. Con `?historial=1` se sube.
+const HISTORY_TAKE = 10;
+const HISTORY_TAKE_EXPANDED = 200;
+const WANTED_TAKE = 30;
 
 export const metadata = { title: "Panel · Shareable" };
 export const dynamic = "force-dynamic";
@@ -87,50 +96,84 @@ function WantedStatusBadge({ status }: { status: WantedItemStatus }) {
   );
 }
 
-export default async function DashboardPage() {
-  const session = await auth();
+type SearchParams = Promise<{ historial?: string }>;
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: SearchParams;
+}) {
+  const [session, sp] = await Promise.all([auth(), searchParams]);
   if (!session?.user?.id) redirect("/auth/login?callbackUrl=/dashboard");
 
   const userId = session.user.id;
+  const expanded = sp.historial === "1";
+  const historyTake = expanded ? HISTORY_TAKE_EXPANDED : HISTORY_TAKE;
 
-  const [outgoing, incoming, wantedItems] = await Promise.all([
-    prisma.request.findMany({
-      where: { borrowerId: userId },
-      orderBy: { createdAt: "desc" },
-      include: {
-        item: {
-          select: {
-            id: true,
-            title: true,
-            owner: { select: { id: true, name: true, email: true, image: true } },
-          },
-        },
-        ratings: { where: { raterUserId: userId }, select: { id: true } },
+  // Activos = pendientes + en curso + completados sin valorar todavía
+  // (se sigue mostrando el RatingForm hasta que valoran). El resto cae a
+  // "Histórico" — paginado y colapsado por defecto.
+  const outgoingInclude = {
+    item: {
+      select: {
+        id: true,
+        title: true,
+        owner: { select: { id: true, name: true, email: true, image: true } },
       },
-    }),
-    prisma.request.findMany({
-      where: { item: { ownerId: userId } },
-      orderBy: { createdAt: "desc" },
-      include: {
-        item: { select: { id: true, title: true } },
-        borrower: { select: { id: true, name: true, email: true, image: true } },
-        ratings: { where: { raterUserId: userId }, select: { id: true } },
-      },
-    }),
-    prisma.wantedItem.findMany({
-      where: { requesterId: userId },
-      orderBy: { createdAt: "desc" },
-      include: {
-        _count: {
-          select: {
-            matches: {
-              where: { seenAt: null, item: { isActive: true } },
+    },
+    ratings: { where: { raterUserId: userId }, select: { id: true } },
+  } as const;
+  const incomingInclude = {
+    item: { select: { id: true, title: true } },
+    borrower: { select: { id: true, name: true, email: true, image: true } },
+    ratings: { where: { raterUserId: userId }, select: { id: true } },
+  } as const;
+
+  const [outgoingActive, outgoingHistory, incomingActive, incomingHistory, wantedItems] =
+    await Promise.all([
+      prisma.request.findMany({
+        where: { borrowerId: userId, status: { notIn: HISTORY_STATUSES } },
+        orderBy: { createdAt: "desc" },
+        include: outgoingInclude,
+        take: 100,
+      }),
+      prisma.request.findMany({
+        where: { borrowerId: userId, status: { in: HISTORY_STATUSES } },
+        orderBy: { createdAt: "desc" },
+        include: outgoingInclude,
+        take: historyTake,
+      }),
+      prisma.request.findMany({
+        where: { item: { ownerId: userId }, status: { notIn: HISTORY_STATUSES } },
+        orderBy: { createdAt: "desc" },
+        include: incomingInclude,
+        take: 100,
+      }),
+      prisma.request.findMany({
+        where: { item: { ownerId: userId }, status: { in: HISTORY_STATUSES } },
+        orderBy: { createdAt: "desc" },
+        include: incomingInclude,
+        take: historyTake,
+      }),
+      prisma.wantedItem.findMany({
+        where: { requesterId: userId },
+        orderBy: { createdAt: "desc" },
+        take: WANTED_TAKE,
+        include: {
+          _count: {
+            select: {
+              matches: {
+                where: { seenAt: null, item: { isActive: true } },
+              },
             },
           },
         },
-      },
-    }),
-  ]);
+      }),
+    ]);
+
+  const outgoing = outgoingActive;
+  const incoming = incomingActive;
+  const hasHistory = outgoingHistory.length > 0 || incomingHistory.length > 0;
 
   return (
     <section className="mx-auto w-full max-w-6xl space-y-12 px-4 py-12 md:px-6 md:py-16">
@@ -366,6 +409,79 @@ export default async function DashboardPage() {
           </div>
         )}
       </div>
+
+      {hasHistory && (
+        <details className="group rounded-2xl border border-dashed border-border bg-card/30 p-4 open:bg-card/50">
+          <summary className="cursor-pointer list-none text-sm font-medium text-muted-foreground hover:text-foreground">
+            <span className="inline-flex items-center gap-2">
+              <Inbox className="size-4" />
+              Histórico ({outgoingHistory.length + incomingHistory.length}
+              {expanded ? "" : "+"})
+              <span className="text-xs text-muted-foreground/70">
+                · clic para desplegar
+              </span>
+            </span>
+          </summary>
+          <div className="mt-4 space-y-6 text-sm">
+            {outgoingHistory.length > 0 && (
+              <div>
+                <h3 className="mb-2 font-semibold text-foreground/80">
+                  Mis alquileres ({outgoingHistory.length})
+                </h3>
+                <ul className="space-y-1">
+                  {outgoingHistory.map((r) => (
+                    <li
+                      key={r.id}
+                      className="flex items-center justify-between gap-3 rounded-lg px-2 py-1 hover:bg-secondary/40"
+                    >
+                      <Link
+                        href={`/items/${r.item.id}`}
+                        className="truncate hover:underline"
+                      >
+                        {r.item.title}
+                      </Link>
+                      <StatusBadge status={r.status} />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {incomingHistory.length > 0 && (
+              <div>
+                <h3 className="mb-2 font-semibold text-foreground/80">
+                  Mis solicitudes ({incomingHistory.length})
+                </h3>
+                <ul className="space-y-1">
+                  {incomingHistory.map((r) => (
+                    <li
+                      key={r.id}
+                      className="flex items-center justify-between gap-3 rounded-lg px-2 py-1 hover:bg-secondary/40"
+                    >
+                      <Link
+                        href={`/items/${r.item.id}`}
+                        className="truncate hover:underline"
+                      >
+                        {r.item.title}
+                      </Link>
+                      <StatusBadge status={r.status} />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {!expanded &&
+              (outgoingHistory.length >= HISTORY_TAKE ||
+                incomingHistory.length >= HISTORY_TAKE) && (
+                <Link
+                  href="/dashboard?historial=1"
+                  className="inline-block text-xs font-medium text-primary hover:underline"
+                >
+                  Ver histórico completo →
+                </Link>
+              )}
+          </div>
+        </details>
+      )}
     </section>
   );
 }
