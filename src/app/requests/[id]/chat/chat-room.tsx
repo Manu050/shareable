@@ -3,8 +3,7 @@
 import { format, formatRelative } from "date-fns";
 import { es } from "date-fns/locale";
 import { Loader2, MessageCircle, Send } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import useSWR from "swr";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -20,16 +19,43 @@ export type ChatMessage = {
   sender: { id: string; name: string | null; image: string | null };
 };
 
+const POLL_ACTIVE_MS = 3000;
+const POLL_HIDDEN_MS = 15000;
+
 function initials(name?: string | null) {
   const src = name?.trim() || "?";
   const parts = src.split(/\s+/);
   return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase();
 }
 
-async function fetcher(url: string): Promise<{ messages: ChatMessage[] }> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Fetch failed");
-  return res.json();
+function toIso(d: Date | string): string {
+  return typeof d === "string" ? d : d.toISOString();
+}
+
+// Devuelve el ISO del último mensaje **real** (no optimista). Las entries
+// con id "tmp-…" no cuentan porque su timestamp es del cliente.
+function lastSyncedIso(msgs: ChatMessage[]): string {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (!msgs[i].id.startsWith("tmp-")) return toIso(msgs[i].createdAt);
+  }
+  return "";
+}
+
+// Mezcla deltas reales con la lista actual, eliminando los optimistas que el
+// servidor ya nos confirma (match por contenido del usuario actual).
+function mergeDelta(
+  prev: ChatMessage[],
+  delta: ChatMessage[],
+  currentUserId: string,
+): ChatMessage[] {
+  if (delta.length === 0) return prev;
+  const mineContents = new Set(
+    delta.filter((d) => d.sender.id === currentUserId).map((d) => d.content),
+  );
+  const cleaned = prev.filter(
+    (p) => !(p.id.startsWith("tmp-") && mineContents.has(p.content)),
+  );
+  return [...cleaned, ...delta];
 }
 
 export function ChatRoom({
@@ -41,23 +67,70 @@ export function ChatRoom({
   currentUserId: string;
   initialMessages: ChatMessage[];
 }) {
-  const { data, mutate, isValidating } = useSWR(
-    `/api/requests/${requestId}/messages`,
-    fetcher,
-    {
-      fallbackData: { messages: initialMessages },
-      refreshInterval: 3000,
-      refreshWhenHidden: false,        // pausa al cambiar de pestaña
-      revalidateOnFocus: true,
-      dedupingInterval: 1000,
-    },
-  );
-
-  const messages = data?.messages ?? [];
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [content, setContent] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
+  // Polling delta: pide solo lo nuevo desde el último mensaje sincronizado.
+  // Pausado cuando la pestaña no está visible (ahorro de Postgres).
+  const poll = useCallback(
+    async (signal: AbortSignal) => {
+      if (signal.aborted) return;
+      setIsValidating(true);
+      const since = lastSyncedIso(messagesRef.current);
+      const qs = since ? `?since=${encodeURIComponent(since)}` : "";
+      try {
+        const res = await fetch(`/api/requests/${requestId}/messages${qs}`, {
+          signal,
+        });
+        if (!res.ok || signal.aborted) return;
+        const data = (await res.json()) as { messages: ChatMessage[] };
+        if (since) {
+          setMessages((prev) => mergeDelta(prev, data.messages, currentUserId));
+        } else {
+          setMessages(data.messages);
+        }
+      } catch {
+        // network blip — el siguiente tick reintenta
+      } finally {
+        if (!signal.aborted) setIsValidating(false);
+      }
+    },
+    [requestId, currentUserId],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout>;
+
+    const tick = async () => {
+      await poll(controller.signal);
+      if (controller.signal.aborted) return;
+      timeout = setTimeout(
+        tick,
+        document.hidden ? POLL_HIDDEN_MS : POLL_ACTIVE_MS,
+      );
+    };
+
+    timeout = setTimeout(tick, POLL_ACTIVE_MS);
+
+    const onFocus = () => {
+      clearTimeout(timeout);
+      tick();
+    };
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      controller.abort();
+      clearTimeout(timeout);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [poll]);
 
   // Auto-scroll al fondo cuando llegan mensajes nuevos.
   useEffect(() => {
@@ -70,27 +143,26 @@ export function ChatRoom({
     setError(null);
     setSending(true);
 
-    // Mensaje optimista: lo mostramos al instante mientras el server confirma.
+    const text = content;
     const optimistic: ChatMessage = {
       id: `tmp-${Date.now()}`,
-      content,
+      content: text,
       createdAt: new Date(),
       sender: { id: currentUserId, name: null, image: null },
     };
-    await mutate(
-      { messages: [...messages, optimistic] },
-      { revalidate: false },
-    );
+    setMessages((prev) => [...prev, optimistic]);
 
-    const res = await createMessage({ requestId, content });
+    const res = await createMessage({ requestId, content: text });
     setSending(false);
     if (!res.ok) {
       setError(res.error);
-      await mutate(); // recarga real para revertir el optimista
+      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       return;
     }
     setContent("");
-    await mutate(); // trae el mensaje real con su id de BD
+    // Trigger inmediato del polling para resolver el tmp- por el real.
+    const controller = new AbortController();
+    poll(controller.signal);
   }
 
   return (

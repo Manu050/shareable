@@ -3,8 +3,7 @@
 import { format, formatRelative } from "date-fns";
 import { es } from "date-fns/locale";
 import { Loader2, MessageCircle, Send } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import useSWR from "swr";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -18,16 +17,39 @@ export type DmMessage = {
   sender: { id: string; name: string | null; image: string | null };
 };
 
+const POLL_ACTIVE_MS = 3000;
+const POLL_HIDDEN_MS = 15000;
+
 function initials(name?: string | null) {
   const src = name?.trim() || "?";
   const parts = src.split(/\s+/);
   return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase();
 }
 
-async function fetcher(url: string): Promise<{ messages: DmMessage[] }> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("fetch failed");
-  return res.json();
+function toIso(d: Date | string): string {
+  return typeof d === "string" ? d : d.toISOString();
+}
+
+function lastSyncedIso(msgs: DmMessage[]): string {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (!msgs[i].id.startsWith("tmp-")) return toIso(msgs[i].createdAt);
+  }
+  return "";
+}
+
+function mergeDelta(
+  prev: DmMessage[],
+  delta: DmMessage[],
+  currentUserId: string,
+): DmMessage[] {
+  if (delta.length === 0) return prev;
+  const mineContents = new Set(
+    delta.filter((d) => d.sender.id === currentUserId).map((d) => d.content),
+  );
+  const cleaned = prev.filter(
+    (p) => !(p.id.startsWith("tmp-") && mineContents.has(p.content)),
+  );
+  return [...cleaned, ...delta];
 }
 
 export function DmRoom({
@@ -39,23 +61,69 @@ export function DmRoom({
   currentUserId: string;
   initialMessages: DmMessage[];
 }) {
-  const { data, mutate, isValidating } = useSWR(
-    `/api/conversations/${conversationId}/messages`,
-    fetcher,
-    {
-      fallbackData: { messages: initialMessages },
-      refreshInterval: 3000,
-      refreshWhenHidden: false,
-      revalidateOnFocus: true,
-      dedupingInterval: 1000,
-    },
-  );
-
-  const messages = data?.messages ?? [];
+  const [messages, setMessages] = useState<DmMessage[]>(initialMessages);
   const [content, setContent] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
+  const poll = useCallback(
+    async (signal: AbortSignal) => {
+      if (signal.aborted) return;
+      setIsValidating(true);
+      const since = lastSyncedIso(messagesRef.current);
+      const qs = since ? `?since=${encodeURIComponent(since)}` : "";
+      try {
+        const res = await fetch(
+          `/api/conversations/${conversationId}/messages${qs}`,
+          { signal },
+        );
+        if (!res.ok || signal.aborted) return;
+        const data = (await res.json()) as { messages: DmMessage[] };
+        if (since) {
+          setMessages((prev) => mergeDelta(prev, data.messages, currentUserId));
+        } else {
+          setMessages(data.messages);
+        }
+      } catch {
+        // ignore
+      } finally {
+        if (!signal.aborted) setIsValidating(false);
+      }
+    },
+    [conversationId, currentUserId],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout>;
+
+    const tick = async () => {
+      await poll(controller.signal);
+      if (controller.signal.aborted) return;
+      timeout = setTimeout(
+        tick,
+        document.hidden ? POLL_HIDDEN_MS : POLL_ACTIVE_MS,
+      );
+    };
+
+    timeout = setTimeout(tick, POLL_ACTIVE_MS);
+
+    const onFocus = () => {
+      clearTimeout(timeout);
+      tick();
+    };
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      controller.abort();
+      clearTimeout(timeout);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [poll]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -67,29 +135,31 @@ export function DmRoom({
     setError(null);
     setSending(true);
 
+    const text = content;
     const optimistic: DmMessage = {
       id: `tmp-${Date.now()}`,
-      content,
+      content: text,
       createdAt: new Date(),
       sender: { id: currentUserId, name: null, image: null },
     };
-    await mutate({ messages: [...messages, optimistic] }, { revalidate: false });
+    setMessages((prev) => [...prev, optimistic]);
 
     const res = await fetch(`/api/conversations/${conversationId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content: text }),
     });
 
     setSending(false);
     if (!res.ok) {
-      const data = await res.json().catch(() => ({})) as { error?: string };
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
       setError(data.error ?? "No se pudo enviar.");
-      await mutate();
+      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       return;
     }
     setContent("");
-    await mutate();
+    const controller = new AbortController();
+    poll(controller.signal);
   }
 
   return (

@@ -19,7 +19,8 @@ async function assertMember(convId: string, userId: string) {
 
 // GET /api/conversations/[id]/messages
 // Devuelve mensajes ordenados ASC y marca como leídos los del otro usuario.
-export async function GET(_req: Request, { params }: Params) {
+// Acepta ?since=<ISO> para modo delta (polling).
+export async function GET(req: Request, { params }: Params) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 });
@@ -31,11 +32,19 @@ export async function GET(_req: Request, { params }: Params) {
     return NextResponse.json({ error: "Conversación no encontrada." }, { status: 404 });
   }
 
+  const url = new URL(req.url);
+  const sinceRaw = url.searchParams.get("since");
+  const sinceDate = sinceRaw ? new Date(sinceRaw) : null;
+  const hasSince = sinceDate && !Number.isNaN(sinceDate.getTime());
+
   // Lee primero, marca después. Si invirtiéramos el orden, un mensaje que
   // llegue entre updateMany y findMany quedaría como leído sin haberse
   // entregado al cliente — se perdería en el badge de "no leídos".
   const messages = await prisma.directMessage.findMany({
-    where: { conversationId: id },
+    where: {
+      conversationId: id,
+      ...(hasSince ? { createdAt: { gt: sinceDate! } } : {}),
+    },
     orderBy: { createdAt: "asc" },
     take: 500,
     include: {
@@ -44,6 +53,8 @@ export async function GET(_req: Request, { params }: Params) {
   });
 
   // Sólo marcamos como leídos los que efectivamente cargamos (createdAt <= max).
+  // En modo delta restringimos también el límite inferior para no marcar nada
+  // anterior al `since` (esos ya fueron entregados en cargas previas).
   const last = messages[messages.length - 1];
   if (last) {
     await prisma.directMessage.updateMany({
@@ -51,7 +62,10 @@ export async function GET(_req: Request, { params }: Params) {
         conversationId: id,
         senderId: { not: session.user.id },
         readAt: null,
-        createdAt: { lte: last.createdAt },
+        createdAt: {
+          ...(hasSince ? { gt: sinceDate! } : {}),
+          lte: last.createdAt,
+        },
       },
       data: { readAt: new Date() },
     });

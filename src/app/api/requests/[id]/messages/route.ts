@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { assertParticipant } from "@/lib/request-access";
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
@@ -22,8 +22,18 @@ export async function GET(
     );
   }
 
+  // ?since=<ISO> → solo mensajes posteriores. Reduce el payload del polling
+  // de ~500 filas a ~0-2 por tick, que es lo normal en estado estacionario.
+  const url = new URL(req.url);
+  const sinceRaw = url.searchParams.get("since");
+  const sinceDate = sinceRaw ? new Date(sinceRaw) : null;
+  const hasSince = sinceDate && !Number.isNaN(sinceDate.getTime());
+
   const messages = await prisma.message.findMany({
-    where: { requestId: id },
+    where: {
+      requestId: id,
+      ...(hasSince ? { createdAt: { gt: sinceDate! } } : {}),
+    },
     orderBy: { createdAt: "asc" },
     take: 500,
     include: {
