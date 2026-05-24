@@ -27,7 +27,7 @@ export async function submitRating(input: unknown): Promise<Result> {
   if (!parsed.success) {
     return {
       ok: false,
-      error: parsed.error.issues[0]?.message ?? "Datos inválidos.",
+      error: parsed.error.issues.map((i) => i.message).join(" · ") ?? "Datos inválidos.",
     };
   }
 

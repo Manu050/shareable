@@ -35,11 +35,14 @@ export default async function AdminLayout({
           <span className="text-muted-foreground">· Shareable</span>
         </div>
         <nav className="flex gap-1 text-sm">
-          <Link
-            href="/admin/reports"
-            className="rounded-lg px-3 py-1.5 hover:bg-muted"
-          >
+          <Link href="/admin/reports" className="rounded-lg px-3 py-1.5 hover:bg-muted">
             Reportes
+          </Link>
+          <Link href="/admin/usuarios" className="rounded-lg px-3 py-1.5 hover:bg-muted">
+            Usuarios
+          </Link>
+          <Link href="/admin/se-busca" className="rounded-lg px-3 py-1.5 hover:bg-muted">
+            Se busca
           </Link>
         </nav>
       </header>

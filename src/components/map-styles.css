@@ -1,0 +1,107 @@
+/* ─── Overrides Shareable sobre Leaflet ──────────────────────────────────── */
+/* Cargado una sola vez desde map-styles.ts. Afecta a todos los mapas. */
+
+/* Popup: quitamos el blanco-genérico de Leaflet, lo alineamos con la paleta
+   cálida (FFFBF1 + bordes redondeados a 16px, coral en accentos). */
+.leaflet-popup-content-wrapper {
+  border-radius: 16px;
+  background: #ffffff;
+  border: 1px solid #eddfc4;
+  box-shadow: 0 10px 30px -10px rgba(44, 37, 37, 0.18);
+  padding: 0;
+  overflow: hidden;
+}
+
+.leaflet-popup-content {
+  margin: 0;
+  width: 240px !important;
+  line-height: 1.4;
+  font-family: var(--font-sans, system-ui, sans-serif);
+  color: #2c2525;
+}
+
+.leaflet-popup-tip {
+  background: #ffffff;
+  border: 1px solid #eddfc4;
+  box-shadow: 0 4px 12px -4px rgba(44, 37, 37, 0.18);
+}
+
+/* Botón "x" de cerrar: lo movemos sobre la imagen y le damos un fondo
+   blanco translúcido para que sea visible incluso sobre fotos oscuras. */
+.leaflet-popup-close-button {
+  top: 6px !important;
+  right: 6px !important;
+  width: 22px !important;
+  height: 22px !important;
+  line-height: 22px !important;
+  border-radius: 50% !important;
+  background: rgba(255, 255, 255, 0.85) !important;
+  color: #2c2525 !important;
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  text-align: center;
+  text-decoration: none !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+  transition: background 0.15s ease;
+}
+.leaflet-popup-close-button:hover {
+  background: #ffffff !important;
+}
+
+/* Atribución: la suavizamos visualmente para que no compita con el contenido. */
+.leaflet-control-attribution {
+  background: rgba(255, 251, 241, 0.85) !important;
+  color: #8b7f7f !important;
+  font-size: 10px !important;
+  border-radius: 8px 0 0 0 !important;
+  padding: 2px 6px !important;
+}
+.leaflet-control-attribution a {
+  color: #6e6464 !important;
+}
+
+/* Controles zoom: bordes redondeados + sombra suave. */
+.leaflet-bar {
+  border: 1px solid #eddfc4 !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 12px -4px rgba(44, 37, 37, 0.12) !important;
+  overflow: hidden;
+}
+.leaflet-bar a {
+  background: #ffffff !important;
+  color: #2c2525 !important;
+  border-bottom: 1px solid #eddfc4 !important;
+}
+.leaflet-bar a:last-child {
+  border-bottom: none !important;
+}
+.leaflet-bar a:hover {
+  background: #fff2d0 !important;
+}
+
+/* ─── Marker custom Shareable ────────────────────────────────────────────── */
+/* Reemplaza el pin azul por defecto por un círculo coral con el badge del
+   precio dentro. Usado vía L.divIcon en explore-map.tsx. */
+.shareable-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: #e36a6a;
+  color: #fffbf1;
+  border: 3px solid #ffffff;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  box-shadow: 0 4px 12px -2px rgba(44, 37, 37, 0.35);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.shareable-marker:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 16px -2px rgba(44, 37, 37, 0.45);
+}
+.shareable-marker--free {
+  background: #739e82; /* Verde salvia para los gratis */
+}

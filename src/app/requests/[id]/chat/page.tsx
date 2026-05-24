@@ -15,40 +15,40 @@ export default async function ChatPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params;
-  const session = await auth();
+  const [{ id }, session] = await Promise.all([params, auth()]);
   if (!session?.user?.id) {
     redirect(`/auth/login?callbackUrl=/requests/${id}/chat`);
   }
 
-  const request = await prisma.request.findUnique({
-    where: { id },
-    include: {
-      item: {
-        select: {
-          id: true,
-          title: true,
-          owner: { select: { id: true, name: true, image: true } },
+  const [request, initialMessages] = await Promise.all([
+    prisma.request.findUnique({
+      where: { id },
+      include: {
+        item: {
+          select: {
+            id: true,
+            title: true,
+            owner: { select: { id: true, name: true, image: true } },
+          },
         },
+        borrower: { select: { id: true, name: true, image: true } },
       },
-      borrower: { select: { id: true, name: true, image: true } },
-    },
-  });
+    }),
+    prisma.message.findMany({
+      where: { requestId: id },
+      orderBy: { createdAt: "asc" },
+      take: 500,
+      include: {
+        sender: { select: { id: true, name: true, image: true } },
+      },
+    }) as Promise<ChatMessage[]>,
+  ]);
   if (!request) notFound();
 
   const userId = session.user.id;
   if (request.borrowerId !== userId && request.item.owner.id !== userId) {
     notFound();
   }
-
-  const initialMessages = (await prisma.message.findMany({
-    where: { requestId: id },
-    orderBy: { createdAt: "asc" },
-    take: 500,
-    include: {
-      sender: { select: { id: true, name: true, image: true } },
-    },
-  })) satisfies ChatMessage[];
 
   const counterpart =
     request.item.owner.id === userId ? request.borrower : request.item.owner;

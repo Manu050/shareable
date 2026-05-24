@@ -1,0 +1,23 @@
+/**
+ * Standalone orphan-image cleanup script.
+ * Run with: npx tsx scripts/cleanup-orphans.ts
+ *
+ * Cron example (Debian, daily at 03:00):
+ *   0 3 * * * cd /opt/shareable && npx tsx scripts/cleanup-orphans.ts >> /var/log/shareable-cleanup.log 2>&1
+ */
+import { cleanupOrphanUploads } from "../src/lib/cleanup";
+
+async function main() {
+  console.log(`[cleanup] Starting — ${new Date().toISOString()}`);
+  const result = await cleanupOrphanUploads();
+  const mb = (result.freedBytes / 1024 / 1024).toFixed(2);
+  console.log(
+    `[cleanup] Done. Scanned: ${result.scanned}, Deleted: ${result.deleted}, Errors: ${result.errors}, Freed: ${mb} MB`,
+  );
+  process.exit(0);
+}
+
+main().catch((err) => {
+  console.error("[cleanup] Fatal:", err);
+  process.exit(1);
+});

@@ -1,18 +1,22 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, Pencil } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import type { WantedItemStatus } from "@prisma/client";
 
 export function WantedActions({
   wantedId,
   status,
+  isOwner = false,
 }: {
   wantedId: string;
   status: WantedItemStatus;
+  isOwner?: boolean;
 }) {
   const router = useRouter();
   const [pending, setPending] = useState<"fulfill" | "cancel" | "extend" | null>(
@@ -47,6 +51,14 @@ export function WantedActions({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {isOwner && (
+        <Link
+          href={`/se-busca/${wantedId}/editar`}
+          className={cn(buttonVariants({ variant: "outline", size: "sm" }), "rounded-xl gap-1.5")}
+        >
+          <Pencil className="size-3.5" /> Editar
+        </Link>
+      )}
       <Button
         size="sm"
         className="rounded-xl"

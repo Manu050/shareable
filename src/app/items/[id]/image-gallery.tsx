@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { PackageOpen } from "lucide-react";
 import { useState } from "react";
 
@@ -24,12 +25,14 @@ export function ImageGallery({
 
   return (
     <div className="space-y-3">
-      <div className="aspect-[4/3] w-full overflow-hidden rounded-2xl bg-secondary/40">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
+      <div className="relative aspect-[4/3] w-full overflow-hidden rounded-2xl bg-secondary/40">
+        <Image
           src={images[active]!.url}
           alt={alt}
-          className="h-full w-full object-cover"
+          fill
+          sizes="(max-width: 1024px) 100vw, 60vw"
+          priority
+          className="object-cover"
         />
       </div>
 
@@ -41,18 +44,19 @@ export function ImageGallery({
               type="button"
               onClick={() => setActive(i)}
               className={cn(
-                "aspect-square w-20 overflow-hidden rounded-xl border-2 transition-all",
+                "relative aspect-square w-20 overflow-hidden rounded-xl border-2 transition-all",
                 i === active
                   ? "border-primary shadow-sm"
                   : "border-transparent opacity-70 hover:opacity-100",
               )}
               aria-label={`Ver foto ${i + 1}`}
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
+              <Image
                 src={img.url}
                 alt=""
-                className="h-full w-full object-cover"
+                fill
+                sizes="80px"
+                className="object-cover"
               />
             </button>
           ))}

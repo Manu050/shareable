@@ -1,13 +1,15 @@
+import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
-import { PackageOpen } from "lucide-react";
+import { MessageCircle, PackageOpen } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { StarsDisplay } from "@/components/star-rating";
+import { SendMessageButton } from "@/components/send-message-button";
 import { auth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { prisma } from "@/lib/prisma";
@@ -29,8 +31,7 @@ export default async function UsuarioPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id: rawId } = await params;
-  const session = await auth();
+  const [{ id: rawId }, session] = await Promise.all([params, auth()]);
 
   // Soporta /usuarios/me como atajo a la sesión actual.
   const userId = rawId === "me" ? session?.user?.id : rawId;
@@ -58,7 +59,7 @@ export default async function UsuarioPage({
     }),
     prisma.item.findMany({
       where: { ownerId: userId, isActive: true },
-      orderBy: { id: "desc" },
+      orderBy: { createdAt: "desc" },
       take: 12,
       include: { images: { orderBy: { position: "asc" }, take: 1 } },
     }),
@@ -95,12 +96,22 @@ export default async function UsuarioPage({
                 Suspendido
               </Badge>
             )}
-            {isMe && (
+            {isMe ? (
               <Link
                 href="/perfil"
                 className="rounded-lg border border-border px-2.5 py-1 text-xs hover:bg-muted"
               >
                 Editar mi perfil
+              </Link>
+            ) : session?.user?.id ? (
+              <SendMessageButton targetUserId={user.id} />
+            ) : (
+              <Link
+                href={`/auth/login?callbackUrl=/usuarios/${user.id}`}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs hover:bg-muted"
+              >
+                <MessageCircle className="size-3.5" />
+                Enviar mensaje
               </Link>
             )}
           </div>
@@ -141,11 +152,12 @@ export default async function UsuarioPage({
                   <Card className="group h-full overflow-hidden rounded-2xl shadow-sm transition-shadow hover:shadow-md">
                     <div className="relative aspect-[4/3] w-full overflow-hidden bg-secondary/40">
                       {cover ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
+                        <Image
                           src={cover}
                           alt={it.title}
-                          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                          fill
+                          sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                          className="object-cover transition-transform duration-300 group-hover:scale-105"
                         />
                       ) : (
                         <div className="flex h-full w-full items-center justify-center text-primary/60">
@@ -161,7 +173,7 @@ export default async function UsuarioPage({
                     <CardFooter className="pt-0">
                       <span
                         className={cn(
-                          "rounded-full px-2.5 py-1 text-xs font-semibold",
+                          "rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums",
                           price === 0
                             ? "bg-accent/15 text-accent"
                             : "bg-primary/10 text-primary",

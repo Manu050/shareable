@@ -6,6 +6,7 @@ import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertParticipant } from "@/lib/request-access";
+import { mailNewMessage } from "@/lib/mailer";
 
 const CreateSchema = z.object({
   requestId: z.string().uuid(),
@@ -29,7 +30,7 @@ export async function createMessage(input: {
   if (!parsed.success) {
     return {
       ok: false,
-      error: parsed.error.issues[0]?.message ?? "Datos inválidos.",
+      error: parsed.error.issues.map((i) => i.message).join(" · ") ?? "Datos inválidos.",
     };
   }
 
@@ -49,5 +50,25 @@ export async function createMessage(input: {
   // El SSR del chat lo invalidamos por si alguien recarga la página manualmente;
   // el polling SWR es quien hace la actualización en vivo entre los dos lados.
   revalidatePath(`/requests/${parsed.data.requestId}/chat`);
+
+  // Notify the other participant about the new message (fire-and-forget).
+  const recipientId =
+    session.user.id === part.ownerId ? part.borrowerId : part.ownerId;
+  // Una sola query: el `in` trae sender + recipient juntos.
+  const both = await prisma.user.findMany({
+    where: { id: { in: [session.user.id, recipientId] } },
+    select: { id: true, email: true, name: true },
+  });
+  const sender = both.find((u) => u.id === session.user.id);
+  const recipient = both.find((u) => u.id === recipientId);
+  if (recipient) {
+    mailNewMessage(
+      recipient.email,
+      recipient.name,
+      sender?.name ?? null,
+      parsed.data.requestId,
+    ).catch((err) => console.error("[mailNewMessage] failed:", err));
+  }
+
   return { ok: true };
 }

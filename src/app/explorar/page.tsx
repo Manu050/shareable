@@ -1,4 +1,6 @@
+import Image from "next/image";
 import Link from "next/link";
+import { Suspense } from "react";
 import { Megaphone, PackageOpen, Tag } from "lucide-react";
 import type { Prisma } from "@prisma/client";
 
@@ -8,8 +10,14 @@ import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card"
 import { cn } from "@/lib/utils";
 import { ITEM_CATEGORIES, type ItemCategory } from "@/lib/categories";
 import { prisma } from "@/lib/prisma";
-
 import { SearchBar } from "./search-bar";
+
+type ItemWithRelations = Awaited<ReturnType<typeof prisma.item.findMany<{
+  include: {
+    owner: { select: { name: true; email: true; image: true } };
+    images: { orderBy: { position: "asc" }; take: 1 };
+  };
+}>>>[number];
 
 export const metadata = { title: "Explorar · Shareable" };
 export const dynamic = "force-dynamic";
@@ -36,23 +44,56 @@ export default async function ExplorarPage({
       : undefined;
   const query = q?.trim() ?? "";
 
-  const where: Prisma.ItemWhereInput = { isActive: true };
-  if (selectedCategory) where.category = selectedCategory;
-  if (query.length > 0) {
-    where.OR = [
-      { title: { contains: query, mode: "insensitive" } },
-      { description: { contains: query, mode: "insensitive" } },
-    ];
-  }
+  const include = {
+    owner: { select: { name: true, email: true, image: true } },
+    images: { orderBy: { position: "asc" } as const, take: 1 },
+  } as const;
 
-  const items = await prisma.item.findMany({
-    where,
-    orderBy: { id: "desc" },
-    include: {
-      owner: { select: { name: true, email: true, image: true } },
-      images: { orderBy: { position: "asc" }, take: 1 },
-    },
-  });
+  let items: ItemWithRelations[];
+
+  if (query.length > 0) {
+    // Full-text search via GIN index (Spanish stemming). Returns IDs ranked by
+    // ts_rank; a second findMany fetches full records with relations.
+    // Two separate tagged-template queries to keep parameterization safe.
+    const hits = selectedCategory
+      ? await prisma.$queryRaw<{ id: string }[]>`
+          SELECT id FROM items
+          WHERE is_active = true
+            AND search_vector @@ plainto_tsquery('spanish', ${query})
+            AND category = ${selectedCategory}
+          ORDER BY ts_rank(search_vector, plainto_tsquery('spanish', ${query})) DESC
+          LIMIT 100`
+      : await prisma.$queryRaw<{ id: string }[]>`
+          SELECT id FROM items
+          WHERE is_active = true
+            AND search_vector @@ plainto_tsquery('spanish', ${query})
+          ORDER BY ts_rank(search_vector, plainto_tsquery('spanish', ${query})) DESC
+          LIMIT 100`;
+
+    const orderedIds = hits.map((r) => r.id);
+
+    const raw = await prisma.item.findMany({
+      where: { id: { in: orderedIds } },
+      include,
+    });
+
+    // Restore relevance order from ts_rank
+    const rankMap = new Map(orderedIds.map((id, i) => [id, i]));
+    items = raw.sort((a, b) => (rankMap.get(a.id) ?? 99) - (rankMap.get(b.id) ?? 99));
+  } else {
+    const where: Prisma.ItemWhereInput = { isActive: true };
+    if (selectedCategory) where.category = selectedCategory;
+
+    // Sin paginación esto cargaba TODOS los items activos en SSR. Topamos a
+    // 60: cabe en 3 columnas × 20 filas, suficiente para una primera vista.
+    // Migrar a paginación con cursor cuando metamos el filtro avanzado.
+    items = await prisma.item.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      include,
+      take: 60,
+    });
+  }
 
   const hasActiveFilters = query.length > 0 || selectedCategory != null;
 
@@ -79,7 +120,9 @@ export default async function ExplorarPage({
       </header>
 
       <div className="mb-6">
-        <SearchBar />
+        <Suspense fallback={<div className="h-10 animate-pulse rounded-xl bg-muted" />}>
+          <SearchBar />
+        </Suspense>
       </div>
 
       {items.length === 0 ? (
@@ -90,7 +133,7 @@ export default async function ExplorarPage({
               <h2 className="text-lg font-semibold">Nadie lo ha subido aún</h2>
               <p className="max-w-md text-sm text-muted-foreground">
                 {query
-                  ? <>No hay objetos para <span className="font-medium text-foreground">"{query}"</span>{selectedCategory ? <> en <span className="font-medium text-foreground">{selectedCategory}</span></> : null}. ¡Pídeselo al barrio y te avisamos cuando alguien lo publique!</>
+                  ? <>No hay objetos para <span className="font-medium text-foreground">&ldquo;{query}&rdquo;</span>{selectedCategory ? <> en <span className="font-medium text-foreground">{selectedCategory}</span></> : null}. ¡Pídeselo al barrio y te avisamos cuando alguien lo publique!</>
                   : <>Aún no hay objetos en <span className="font-medium text-foreground">{selectedCategory}</span>. ¡Pídeselo al barrio!</>}
               </p>
               <Link
@@ -136,11 +179,12 @@ export default async function ExplorarPage({
                 <Card className="group flex h-full flex-col overflow-hidden rounded-2xl shadow-sm transition-shadow hover:shadow-md">
                   <div className="relative aspect-[4/3] w-full overflow-hidden bg-secondary/40">
                     {cover ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
+                      <Image
                         src={cover}
                         alt={item.title}
-                        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        fill
+                        sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                        className="object-cover transition-transform duration-300 group-hover:scale-105"
                       />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center text-primary/60">
@@ -165,7 +209,7 @@ export default async function ExplorarPage({
                   <CardContent className="mt-auto pt-0">
                     <span
                       className={cn(
-                        "inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold",
+                        "inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold tabular-nums",
                         price === 0
                           ? "bg-accent/15 text-accent"
                           : "bg-primary/10 text-primary",

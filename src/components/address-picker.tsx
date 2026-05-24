@@ -4,7 +4,12 @@ import { Loader2, MapPin, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { MapContainer, Marker, TileLayer, useMap } from "react-leaflet";
 
-import "@/components/map-styles";
+import {
+  TILE_ATTRIBUTION,
+  TILE_MAX_ZOOM,
+  TILE_SUBDOMAINS,
+  TILE_URL,
+} from "@/components/map-styles";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DEFAULT_LATITUDE, DEFAULT_LONGITUDE } from "@/lib/categories";
@@ -20,35 +25,35 @@ type NominatimResult = {
 function MapMover({ center }: { center: Coords }) {
   const map = useMap();
   useEffect(() => {
-    map.setView([center.lat, center.lng], 16, { animate: true });
+    const reduced =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    map.setView([center.lat, center.lng], 16, { animate: !reduced });
   }, [center, map]);
   return null;
 }
 
 export function AddressPicker({
   onChange,
+  initialCoords,
 }: {
   onChange: (c: Coords & { address: string }) => void;
+  initialCoords?: Coords;
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<NominatimResult[]>([]);
   const [loading, setLoading] = useState(false);
-  const [coords, setCoords] = useState<Coords>({
-    lat: DEFAULT_LATITUDE,
-    lng: DEFAULT_LONGITUDE,
-  });
+  const [coords, setCoords] = useState<Coords>(
+    initialCoords ?? { lat: DEFAULT_LATITUDE, lng: DEFAULT_LONGITUDE },
+  );
   const [address, setAddress] = useState<string>("Sanchinarro, Madrid");
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Sincroniza el padre cuando cambian las coordenadas.
-  useEffect(() => {
-    onChange({ ...coords, address });
-    // Solo cuando cambian las coords/dir, no cuando cambia onChange.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coords, address]);
-
   function search(q: string) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    // 800 ms: Nominatim TOS limita a 1 rps. Con 350 ms los typers rápidos
+    // disparaban varias requests por segundo. Vamos a través de nuestro proxy
+    // server-side `/api/geocode` que añade User-Agent y caché.
     debounceRef.current = setTimeout(async () => {
       if (q.trim().length < 3) {
         setResults([]);
@@ -56,33 +61,36 @@ export function AddressPicker({
       }
       setLoading(true);
       try {
-        // Sesgamos la búsqueda hacia Madrid (Sanchinarro).
-        const url = new URL("https://nominatim.openstreetmap.org/search");
-        url.searchParams.set("q", q);
-        url.searchParams.set("format", "json");
-        url.searchParams.set("addressdetails", "0");
-        url.searchParams.set("limit", "5");
-        url.searchParams.set("countrycodes", "es");
-        url.searchParams.set("viewbox", "-3.75,40.55,-3.55,40.42");
-        url.searchParams.set("bounded", "1");
-        const res = await fetch(url, {
-          headers: { "Accept-Language": "es" },
-        });
-        const data: NominatimResult[] = await res.json();
-        setResults(data);
+        const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`);
+        if (!res.ok) {
+          setResults([]);
+          return;
+        }
+        const data = (await res.json()) as { results?: NominatimResult[] };
+        setResults(data.results ?? []);
       } catch {
         setResults([]);
       } finally {
         setLoading(false);
       }
-    }, 350);
+    }, 800);
   }
 
   function pick(r: NominatimResult) {
-    setCoords({ lat: parseFloat(r.lat), lng: parseFloat(r.lon) });
+    const next = { lat: parseFloat(r.lat), lng: parseFloat(r.lon) };
+    setCoords(next);
     setAddress(r.display_name);
     setQuery(r.display_name);
     setResults([]);
+    onChange({ ...next, address: r.display_name });
+  }
+
+  function resetToSanchinarro() {
+    const next = { lat: DEFAULT_LATITUDE, lng: DEFAULT_LONGITUDE };
+    setCoords(next);
+    setAddress("Sanchinarro, Madrid");
+    setQuery("");
+    onChange({ ...next, address: "Sanchinarro, Madrid" });
   }
 
   return (
@@ -105,8 +113,8 @@ export function AddressPicker({
 
         {results.length > 0 && (
           <ul className="absolute z-20 mt-1 w-full overflow-hidden rounded-xl border border-border bg-popover shadow-md">
-            {results.map((r, i) => (
-              <li key={i}>
+            {results.map((r) => (
+              <li key={`${r.lat},${r.lon}`}>
                 <button
                   type="button"
                   onClick={() => pick(r)}
@@ -129,8 +137,10 @@ export function AddressPicker({
           style={{ height: "240px", width: "100%" }}
         >
           <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            attribution={TILE_ATTRIBUTION}
+            url={TILE_URL}
+            subdomains={TILE_SUBDOMAINS}
+            maxZoom={TILE_MAX_ZOOM}
           />
           <Marker position={[coords.lat, coords.lng]} />
           <MapMover center={coords} />
@@ -148,11 +158,7 @@ export function AddressPicker({
         variant="ghost"
         size="sm"
         className="rounded-lg text-xs"
-        onClick={() => {
-          setCoords({ lat: DEFAULT_LATITUDE, lng: DEFAULT_LONGITUDE });
-          setAddress("Sanchinarro, Madrid");
-          setQuery("");
-        }}
+        onClick={resetToSanchinarro}
       >
         Volver a Sanchinarro
       </Button>

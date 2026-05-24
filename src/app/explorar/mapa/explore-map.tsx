@@ -1,7 +1,8 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Locate, PackageOpen } from "lucide-react";
 import {
   Circle,
@@ -12,7 +13,13 @@ import {
   useMap,
 } from "react-leaflet";
 
-import "@/components/map-styles";
+import {
+  TILE_ATTRIBUTION,
+  TILE_MAX_ZOOM,
+  TILE_SUBDOMAINS,
+  TILE_URL,
+  priceMarker,
+} from "@/components/map-styles";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Select,
@@ -49,6 +56,12 @@ function priceLabel(price: number) {
   return price === 0 ? "Gratis" : `${price.toFixed(2).replace(".", ",")} €/día`;
 }
 
+// Etiqueta corta para el marker: "5€" / "12€" / "Gratis". Cabe en 36×36 px.
+function shortPrice(price: number): string {
+  if (price === 0) return "Gratis";
+  return `${Math.round(price)}€`;
+}
+
 function distLabel(m: number) {
   return m < 1000 ? `${m} m` : `${(m / 1000).toFixed(1).replace(".", ",")} km`;
 }
@@ -56,7 +69,14 @@ function distLabel(m: number) {
 function Recenter({ center }: { center: [number, number] }) {
   const map = useMap();
   useEffect(() => {
-    map.flyTo(center, 15);
+    const reduced =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) {
+      map.setView(center, 15);
+    } else {
+      map.flyTo(center, 15);
+    }
   }, [center, map]);
   return null;
 }
@@ -87,6 +107,10 @@ export function ExploreMap() {
   }, []);
 
   useEffect(() => {
+    // Sync con el endpoint /api/items/nearby: refetch cuando el centro o el
+    // radio cambian. El setState dentro de `load` es para loading UI — no
+    // alimenta nada en este mismo árbol de efectos.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load(center[0], center[1], radius);
   }, [center, radius, load]);
 
@@ -104,6 +128,13 @@ export function ExploreMap() {
       { enableHighAccuracy: true, timeout: 10_000 },
     );
   }
+
+  // Memoizo los icons por item para que un re-render del componente no
+  // recree 200 divIcons (sería costoso y haría que Leaflet repintara markers).
+  const icons = useMemo(
+    () => new Map(items.map((it) => [it.id, priceMarker(shortPrice(it.pricePerDay), it.pricePerDay === 0)])),
+    [items],
+  );
 
   return (
     <section className="mx-auto w-full max-w-6xl px-4 py-8 md:px-6">
@@ -150,7 +181,7 @@ export function ExploreMap() {
       </header>
 
       {geoError && (
-        <p className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <p role="alert" className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {geoError}
         </p>
       )}
@@ -162,8 +193,10 @@ export function ExploreMap() {
           style={{ height: "70vh", width: "100%" }}
         >
           <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            attribution={TILE_ATTRIBUTION}
+            url={TILE_URL}
+            subdomains={TILE_SUBDOMAINS}
+            maxZoom={TILE_MAX_ZOOM}
           />
           <Recenter center={center} />
 
@@ -181,40 +214,64 @@ export function ExploreMap() {
           )}
 
           {items.map((it) => (
-            <Marker key={it.id} position={[it.latitude, it.longitude]}>
-              <Popup>
-                <div className="w-56 space-y-2">
-                  <div className="aspect-[4/3] w-full overflow-hidden rounded-lg bg-secondary/30">
+            <Marker
+              key={it.id}
+              position={[it.latitude, it.longitude]}
+              icon={icons.get(it.id)}
+            >
+              <Popup closeButton={true} maxWidth={260} minWidth={240}>
+                <article className="w-full">
+                  <div className="relative aspect-[16/10] w-full overflow-hidden bg-secondary/30">
                     {it.imageUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
+                      <Image
                         src={it.imageUrl}
                         alt={it.title}
-                        className="h-full w-full object-cover"
+                        fill
+                        sizes="240px"
+                        className="object-cover"
                       />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center text-primary/60">
-                        <PackageOpen className="size-8" />
+                        <PackageOpen className="size-10" />
                       </div>
                     )}
+                    <span className="absolute left-2 top-2 rounded-full bg-background/90 px-2 py-0.5 text-[10px] font-medium text-foreground shadow-sm backdrop-blur">
+                      {it.category}
+                    </span>
                   </div>
-                  <div>
-                    <p className="font-semibold leading-tight">{it.title}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {it.category} · {priceLabel(it.pricePerDay)} ·{" "}
-                      {distLabel(it.distanceM)}
-                    </p>
+
+                  <div className="space-y-2 px-3 py-3">
+                    <h3 className="line-clamp-1 text-sm font-semibold leading-tight">
+                      {it.title}
+                    </h3>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums",
+                          it.pricePerDay === 0
+                            ? "bg-accent/15 text-accent"
+                            : "bg-primary/10 text-primary",
+                        )}
+                      >
+                        {priceLabel(it.pricePerDay)}
+                      </span>
+                      <span className="text-[11px] text-muted-foreground">
+                        {distLabel(it.distanceM)} de aquí
+                      </span>
+                    </div>
+
+                    <Link
+                      href={`/items/${it.id}`}
+                      className={cn(
+                        buttonVariants({ size: "sm" }),
+                        "mt-1 w-full rounded-lg",
+                      )}
+                    >
+                      Ver detalle
+                    </Link>
                   </div>
-                  <Link
-                    href={`/items/${it.id}`}
-                    className={cn(
-                      buttonVariants({ size: "sm" }),
-                      "w-full rounded-lg",
-                    )}
-                  >
-                    Ver detalle
-                  </Link>
-                </div>
+                </article>
               </Popup>
             </Marker>
           ))}

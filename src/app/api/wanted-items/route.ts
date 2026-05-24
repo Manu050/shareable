@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
 import { auth } from "@/lib/auth";
 import { ITEM_CATEGORIES, DEFAULT_LATITUDE, DEFAULT_LONGITUDE } from "@/lib/categories";
 import { prisma } from "@/lib/prisma";
 import { findMatchesForWanted, persistMatches } from "@/lib/wanted-matcher";
+import { jitterCoord } from "@/lib/geo";
 
 const WANTED_TTL_DAYS = 30;
 const ALLOWED_RADII = [1000, 2000, 5000, 10_000] as const;
@@ -21,11 +23,6 @@ const CreateSchema = z.object({
   }),
 });
 
-// Jitter ~±45 m para coordenadas en respuestas públicas (CLAUDE.md §6).
-function jitter(value: number) {
-  return value + (Math.random() - 0.5) * 0.0008;
-}
-
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -35,7 +32,7 @@ export async function POST(req: Request) {
   const parsed = CreateSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Datos inválidos." },
+      { error: parsed.error.issues.map((i) => i.message).join(" · ") ?? "Datos inválidos." },
       { status: 400 },
     );
   }
@@ -57,22 +54,29 @@ export async function POST(req: Request) {
     },
   });
 
-  // Match retroactivo contra items existentes.
-  const matches = await findMatchesForWanted({
-    id: wanted.id,
-    requesterId: wanted.requesterId,
-    category: wanted.category,
-    maxPricePerDay: wanted.maxPricePerDay,
-    latitude: wanted.latitude,
-    longitude: wanted.longitude,
-    radiusM: wanted.radiusM,
-  });
-  await persistMatches(
-    matches.map(({ id }) => ({ wantedItemId: wanted.id, itemId: id })),
-  );
+  // Match retroactivo contra items existentes — no-fatal: si falla, la wanted
+  // ya está creada y el usuario verá los matches retroactivos al primer item
+  // que se publique en su categoría.
+  let matched = 0;
+  try {
+    const matches = await findMatchesForWanted({
+      id: wanted.id,
+      requesterId: wanted.requesterId,
+      category: wanted.category,
+      maxPricePerDay: wanted.maxPricePerDay,
+      latitude: wanted.latitude,
+      longitude: wanted.longitude,
+      radiusM: wanted.radiusM,
+    });
+    matched = await persistMatches(
+      matches.map(({ id }) => ({ wantedItemId: wanted.id, itemId: id })),
+    );
+  } catch (err) {
+    console.error("[POST /api/wanted-items] match failed (non-fatal):", err);
+  }
 
   return NextResponse.json(
-    { wanted: { id: wanted.id, matched: matches.length } },
+    { wanted: { id: wanted.id, matched } },
     { status: 201 },
   );
 }
@@ -111,42 +115,48 @@ export async function GET(req: Request) {
     requester_image: string | null;
   };
 
-  const where = `
-    WHERE w.status = 'open'
-      AND (w.expires_at IS NULL OR w.expires_at > now())
-      ${category ? `AND w.category = '${category.replace(/'/g, "''")}'` : ""}
-      ${filterByDistance ? `AND ST_DWithin(
+  const categoryClause = category
+    ? Prisma.sql`AND w.category = ${category}`
+    : Prisma.empty;
+  const distanceClause = filterByDistance
+    ? Prisma.sql`AND ST_DWithin(
         ST_SetSRID(ST_MakePoint(w.longitude, w.latitude), 4326)::geography,
         ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography,
         ${radius}
-      )` : ""}
-  `;
+      )`
+    : Prisma.empty;
 
-  const rows = await prisma.$queryRawUnsafe<Row[]>(`
+  const rows = await prisma.$queryRaw<Row[]>(Prisma.sql`
     SELECT
       w.id, w.title, w.description, w.category, w.max_price_per_day,
       w.latitude, w.longitude, w.radius_m, w.created_at, w.expires_at,
       u.full_name AS requester_name, u.avatar_url AS requester_image
     FROM wanted_items w
     JOIN users u ON u.id = w.requester_id
-    ${where}
+    WHERE w.status = 'open'
+      AND (w.expires_at IS NULL OR w.expires_at > now())
+      ${categoryClause}
+      ${distanceClause}
     ORDER BY w.created_at DESC
-    LIMIT 200;
+    LIMIT 200
   `);
 
   return NextResponse.json({
-    items: rows.map((r) => ({
-      id: r.id,
-      title: r.title,
-      description: r.description,
-      category: r.category,
-      maxPricePerDay: r.max_price_per_day == null ? null : Number(r.max_price_per_day),
-      latitude: jitter(r.latitude),
-      longitude: jitter(r.longitude),
-      radiusM: r.radius_m,
-      createdAt: r.created_at,
-      expiresAt: r.expires_at,
-      requester: { name: r.requester_name, image: r.requester_image },
-    })),
+    items: rows.map((r) => {
+      const j = jitterCoord(r.id, r.latitude, r.longitude);
+      return {
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        category: r.category,
+        maxPricePerDay: r.max_price_per_day == null ? null : Number(r.max_price_per_day),
+        latitude: j.latitude,
+        longitude: j.longitude,
+        radiusM: r.radius_m,
+        createdAt: r.created_at,
+        expiresAt: r.expires_at,
+        requester: { name: r.requester_name, image: r.requester_image },
+      };
+    }),
   });
 }

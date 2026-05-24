@@ -1,4 +1,4 @@
-import { mkdir, stat, unlink } from "node:fs/promises";
+import { mkdir, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -9,6 +9,9 @@ export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // 5 MB
 export const ALLOWED_MIMES = ["image/jpeg", "image/png", "image/webp"] as const;
 export const MAX_DIMENSION = 1600;
 export const WEBP_QUALITY = 82;
+// Tope de píxeles de entrada: ~16 MP (DSLR rango medio). Por encima asumimos
+// "decompression bomb" y rechazamos antes de gastar RAM en la decodificación.
+export const MAX_INPUT_PIXELS = 16 * 1024 * 1024;
 
 export type UploadKind = "items" | "avatars";
 
@@ -17,24 +20,15 @@ export function uploadRoot() {
   return path.resolve(process.env.UPLOAD_DIR ?? "./uploads");
 }
 
-function subdirFor(kind: UploadKind) {
-  return path.join(uploadRoot(), kind);
-}
-
-async function ensureDir(dir: string) {
-  await mkdir(dir, { recursive: true });
-}
+// Regex única usada por todos los validadores. UUID v4 lower/upper + .webp.
+const UPLOAD_URL_RE = /^\/uploads\/(items|avatars)\/([a-f0-9-]{36}\.webp)$/i;
 
 // Resuelve una URL pública (/uploads/items/<uuid>.webp) a la ruta absoluta en disco,
 // protegiendo contra path traversal (los segmentos no pueden subir niveles).
 export function resolveUploadPath(relative: string): string | null {
-  // relative llega como ["items", "<uuid>.webp"] o ["avatars", "<uuid>.webp"]
-  const segments = relative.split("/").filter(Boolean);
-  if (segments.length !== 2) return null;
-  const [kind, file] = segments;
-  if (kind !== "items" && kind !== "avatars") return null;
-  if (!/^[a-f0-9-]{36}\.webp$/i.test(file)) return null;
-  return path.join(uploadRoot(), kind, file);
+  const m = `/uploads/${relative}`.match(UPLOAD_URL_RE);
+  if (!m) return null;
+  return path.join(uploadRoot(), m[1], m[2]);
 }
 
 export async function processAndSaveImage(
@@ -52,23 +46,31 @@ export async function processAndSaveImage(
   }
 
   // Re-encoding obligatorio: descarta EXIF (GPS) y normaliza a webp.
-  const processed = await sharp(bytes, { failOn: "error" })
-    .rotate() // aplica orientación EXIF antes de borrarla
-    .resize({
-      width: MAX_DIMENSION,
-      height: MAX_DIMENSION,
-      fit: "inside",
-      withoutEnlargement: true,
-    })
-    .webp({ quality: WEBP_QUALITY })
-    .toBuffer();
+  // `limitInputPixels` evita pixel-bombs (PNG con dimensiones masivas).
+  let processed: Buffer;
+  try {
+    processed = await sharp(bytes, { limitInputPixels: MAX_INPUT_PIXELS })
+      .rotate() // aplica orientación EXIF antes de borrarla
+      .resize({
+        width: MAX_DIMENSION,
+        height: MAX_DIMENSION,
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .webp({ quality: WEBP_QUALITY })
+      .toBuffer();
+  } catch {
+    // Pixel-bomb, formato corrupto, libvips warning… todos van por aquí.
+    throw new UploadError("Imagen corrupta o demasiado grande.", 415);
+  }
 
-  const dir = subdirFor(kind);
-  await ensureDir(dir);
+  const dir = path.join(uploadRoot(), kind);
+  await mkdir(dir, { recursive: true });
 
   const filename = `${randomUUID()}.webp`;
   const abs = path.join(dir, filename);
-  await sharp(processed).toFile(abs);
+  // Escritura directa: sharp ya ha producido el buffer final, no re-decodificar.
+  await writeFile(abs, processed);
 
   return {
     url: `/uploads/${kind}/${filename}`,
@@ -77,10 +79,8 @@ export async function processAndSaveImage(
 }
 
 export async function deleteUpload(url: string): Promise<void> {
-  // url tipo "/uploads/<kind>/<file>"
-  const m = url.match(/^\/uploads\/(items|avatars)\/([a-f0-9-]{36}\.webp)$/i);
-  if (!m) return;
-  const abs = path.join(uploadRoot(), m[1], m[2]);
+  const abs = resolveUploadPath(url.replace(/^\/uploads\//, ""));
+  if (!abs) return;
   try {
     await unlink(abs);
   } catch {
@@ -104,4 +104,26 @@ export class UploadError extends Error {
   ) {
     super(message);
   }
+}
+
+// ─── Rate limiter en memoria ────────────────────────────────────────────────
+// Mapa userId → ventana deslizante de timestamps. Para el MVP single-process
+// con PM2 es suficiente; tras escalar a varios workers habrá que mover esto
+// a Redis o a una columna en BD.
+const UPLOAD_LIMIT = 30; // máximo 30 uploads
+const UPLOAD_WINDOW_MS = 60 * 60 * 1000; // por hora rodante
+const uploadWindow = new Map<string, number[]>();
+
+export function checkUploadRate(userId: string): { ok: true } | { ok: false; retryAfter: number } {
+  const now = Date.now();
+  const cutoff = now - UPLOAD_WINDOW_MS;
+  const stamps = (uploadWindow.get(userId) ?? []).filter((t) => t > cutoff);
+  if (stamps.length >= UPLOAD_LIMIT) {
+    const retryAfter = Math.ceil((stamps[0] + UPLOAD_WINDOW_MS - now) / 1000);
+    uploadWindow.set(userId, stamps);
+    return { ok: false, retryAfter };
+  }
+  stamps.push(now);
+  uploadWindow.set(userId, stamps);
+  return { ok: true };
 }

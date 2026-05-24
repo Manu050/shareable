@@ -1,8 +1,12 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { Menu, LogOut, User as UserIcon, Wrench } from "lucide-react";
+import { Menu, LogOut, MessageCircle, User as UserIcon, Wrench } from "lucide-react";
+
+import { DmBadge } from "@/components/dm-badge";
 import { signOut, useSession } from "next-auth/react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -41,24 +45,55 @@ export function Navbar() {
   const { data: session, status } = useSession();
   const user = session?.user;
   const isAuthed = status === "authenticated";
+  const pathname = usePathname();
+  // Coincide la sección activa con el primer segmento del path para que
+  // /items/[id] no resalte "Explorar" pero /explorar/mapa sí lo haga.
+  const isActive = (href: string) =>
+    href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/70">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-4 md:px-6">
-        <Link href="/" className="text-2xl font-semibold tracking-tight text-primary">
-          Shareable
+        <Link href="/" className="flex items-center gap-2">
+          <Image src="/assets/logo.png" alt="" width={28} height={28} className="size-7" />
+          <span className="text-2xl font-semibold tracking-tight text-primary">Shareable</span>
         </Link>
 
         <nav className="hidden items-center gap-1 md:flex">
-          {NAV_LINKS.map((link) => (
+          {NAV_LINKS.map((link) => {
+            const active = isActive(link.href);
+            return (
+              <Link
+                key={link.label}
+                href={link.href}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "rounded-xl px-3 py-2 text-sm font-medium transition-colors",
+                  active
+                    ? "bg-primary/10 text-primary"
+                    : "text-foreground/80 hover:bg-muted hover:text-foreground",
+                )}
+              >
+                {link.label}
+              </Link>
+            );
+          })}
+          {isAuthed && (
             <Link
-              key={link.label}
-              href={link.href}
-              className="rounded-xl px-3 py-2 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
+              href="/mensajes"
+              aria-current={isActive("/mensajes") ? "page" : undefined}
+              className={cn(
+                "flex items-center rounded-xl px-3 py-2 text-sm font-medium transition-colors",
+                isActive("/mensajes")
+                  ? "bg-primary/10 text-primary"
+                  : "text-foreground/80 hover:bg-muted hover:text-foreground",
+              )}
             >
-              {link.label}
+              <MessageCircle className="mr-1.5 size-4" />
+              Mensajes
+              <DmBadge />
             </Link>
-          ))}
+          )}
 
           {isAuthed ? (
             <DropdownMenu>
@@ -136,7 +171,8 @@ export function Navbar() {
             />
             <SheetContent side="right" className="w-72 bg-background">
               <SheetHeader>
-                <SheetTitle className="text-xl font-semibold tracking-tight text-primary">
+                <SheetTitle className="flex items-center gap-2 text-xl font-semibold tracking-tight text-primary">
+                  <Image src="/assets/logo.png" alt="" width={24} height={24} className="size-6" />
                   Shareable
                 </SheetTitle>
               </SheetHeader>
@@ -144,21 +180,21 @@ export function Navbar() {
                 <Link
                   href="/explorar"
                   onClick={() => setOpen(false)}
-                  className="rounded-xl px-3 py-3 text-base font-medium text-foreground/90 transition-colors hover:bg-muted"
+                  className="rounded-xl p-3 text-base font-medium text-foreground/90 transition-colors hover:bg-muted"
                 >
                   Explorar
                 </Link>
                 <Link
                   href="/se-busca"
                   onClick={() => setOpen(false)}
-                  className="rounded-xl px-3 py-3 text-base font-medium text-foreground/90 transition-colors hover:bg-muted"
+                  className="rounded-xl p-3 text-base font-medium text-foreground/90 transition-colors hover:bg-muted"
                 >
                   Se busca
                 </Link>
                 <Link
                   href="/publicar"
                   onClick={() => setOpen(false)}
-                  className="rounded-xl px-3 py-3 text-base font-medium text-foreground/90 transition-colors hover:bg-muted"
+                  className="rounded-xl p-3 text-base font-medium text-foreground/90 transition-colors hover:bg-muted"
                 >
                   Publicar
                 </Link>
@@ -166,16 +202,25 @@ export function Navbar() {
                 {isAuthed ? (
                   <>
                     <Link
+                      href="/mensajes"
+                      onClick={() => setOpen(false)}
+                      className="flex items-center rounded-xl p-3 text-base font-medium text-foreground/90 transition-colors hover:bg-muted"
+                    >
+                      <MessageCircle className="mr-2 size-4" />
+                      Mensajes
+                      <DmBadge />
+                    </Link>
+                    <Link
                       href="/perfil"
                       onClick={() => setOpen(false)}
-                      className="rounded-xl px-3 py-3 text-base font-medium text-foreground/90 transition-colors hover:bg-muted"
+                      className="rounded-xl p-3 text-base font-medium text-foreground/90 transition-colors hover:bg-muted"
                     >
                       Mi perfil
                     </Link>
                     <Link
-                      href="#"
+                      href="/dashboard"
                       onClick={() => setOpen(false)}
-                      className="rounded-xl px-3 py-3 text-base font-medium text-foreground/90 transition-colors hover:bg-muted"
+                      className="rounded-xl p-3 text-base font-medium text-foreground/90 transition-colors hover:bg-muted"
                     >
                       Mis productos
                     </Link>
@@ -185,7 +230,7 @@ export function Navbar() {
                         setOpen(false);
                         signOut({ callbackUrl: "/" });
                       }}
-                      className="rounded-xl px-3 py-3 text-left text-base font-medium text-destructive transition-colors hover:bg-destructive/10"
+                      className="rounded-xl p-3 text-left text-base font-medium text-destructive transition-colors hover:bg-destructive/10"
                     >
                       Cerrar sesión
                     </button>

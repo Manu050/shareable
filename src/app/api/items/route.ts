@@ -8,7 +8,11 @@ import { findMatchesForItem, persistMatches } from "@/lib/wanted-matcher";
 
 const ItemSchema = z.object({
   title: z.string().trim().min(3, "El título debe tener al menos 3 caracteres.").max(120),
-  description: z.string().trim().min(10, "La descripción debe tener al menos 10 caracteres."),
+  description: z
+    .string()
+    .trim()
+    .min(10, "La descripción debe tener al menos 10 caracteres.")
+    .max(2000, "Máximo 2000 caracteres."),
   category: z.enum(ITEM_CATEGORIES),
   pricePerDay: z
     .number()
@@ -38,13 +42,32 @@ export async function POST(req: Request) {
   const parsed = ItemSchema.safeParse(payload);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Datos inválidos." },
+      { error: parsed.error.issues.map((i) => i.message).join(" · ") ?? "Datos inválidos." },
       { status: 400 },
     );
   }
 
   const { title, description, category, pricePerDay, latitude, longitude, images } =
     parsed.data;
+
+  // Anti-hijacking: si alguna URL de imagen ya pertenece a un item de OTRO user,
+  // rechaza. Mismo argumento que en avatar: UUIDs random, sólo se conocen por
+  // ver el HTML público; bloqueamos atajos.
+  if (images && images.length > 0) {
+    const taken = await prisma.itemImage.findFirst({
+      where: {
+        url: { in: images },
+        item: { ownerId: { not: session.user.id } },
+      },
+      select: { id: true },
+    });
+    if (taken) {
+      return NextResponse.json(
+        { error: "Alguna imagen no está disponible." },
+        { status: 409 },
+      );
+    }
+  }
 
   const item = await prisma.item.create({
     data: {
@@ -74,10 +97,19 @@ export async function POST(req: Request) {
 
   // Match síncrono contra peticiones "Se busca" abiertas. Coste despreciable
   // a escala de barrio; sin colas ni workers (CLAUDE.md §5).
-  const matches = await findMatchesForItem(item);
-  const matchCount = await persistMatches(
-    matches.map(({ id }) => ({ wantedItemId: id, itemId: item.id })),
-  );
+  let matchCount = 0;
+  try {
+    const matches = await findMatchesForItem({
+      ...item,
+      pricePerDay: Number(item.pricePerDay),
+    });
+    matchCount = await persistMatches(
+      matches.map(({ id }) => ({ wantedItemId: id, itemId: item.id })),
+    );
+  } catch (err) {
+    // Match failure is non-fatal — item is already created.
+    console.error("[POST /api/items] match failed (non-fatal):", err);
+  }
 
   return NextResponse.json(
     { item: { id: item.id }, matched: matchCount },

@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { PackageOpen, Tag, MapPin } from "lucide-react";
+import { Tag, MapPin, Pencil } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -32,8 +32,7 @@ export default async function ItemDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params;
-  const session = await auth();
+  const [{ id }, session] = await Promise.all([params, auth()]);
 
   const item = await prisma.item.findUnique({
     where: { id },
@@ -66,7 +65,7 @@ export default async function ItemDetailPage({
               {item.title}
             </h1>
             <p
-              className={`mt-2 inline-flex items-center rounded-full px-3 py-1 text-base font-semibold ${
+              className={`mt-2 inline-flex items-center rounded-full px-3 py-1 text-base font-semibold tabular-nums ${
                 price === 0
                   ? "bg-accent/15 text-accent"
                   : "bg-primary/10 text-primary"
@@ -112,7 +111,7 @@ export default async function ItemDetailPage({
           {session?.user ? (
             isOwner ? (
               <Card className="rounded-2xl">
-                <CardContent className="space-y-2 py-6">
+                <CardContent className="space-y-3 py-6">
                   <p className="font-medium">Este objeto es tuyo.</p>
                   <p className="text-sm text-muted-foreground">
                     Verás aquí las solicitudes de tus vecinos en tu{" "}
@@ -121,6 +120,12 @@ export default async function ItemDetailPage({
                     </Link>
                     .
                   </p>
+                  <Link
+                    href={`/items/${item.id}/editar`}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted"
+                  >
+                    <Pencil className="size-3.5" /> Editar anuncio
+                  </Link>
                 </CardContent>
               </Card>
             ) : (

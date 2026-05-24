@@ -62,6 +62,7 @@ export async function suspendUser(userId: string): Promise<Result> {
     data: { status: "suspended" },
   });
   revalidatePath("/admin/reports");
+  revalidatePath("/admin/usuarios");
   return { ok: true };
 }
 
@@ -74,5 +75,24 @@ export async function reactivateUser(userId: string): Promise<Result> {
     data: { status: "active" },
   });
   revalidatePath("/admin/reports");
+  revalidatePath("/admin/usuarios");
+  return { ok: true };
+}
+
+export async function cancelWantedItem(wantedItemId: string): Promise<Result> {
+  const g = await requireAdmin();
+  if ("error" in g) return { ok: false, error: g.error };
+
+  const exists = await prisma.wantedItem.findUnique({
+    where: { id: wantedItemId },
+    select: { id: true },
+  });
+  if (!exists) return { ok: false, error: "Petición no encontrada." };
+
+  await prisma.wantedItem.update({
+    where: { id: wantedItemId },
+    data: { status: "cancelled" },
+  });
+  revalidatePath("/admin/se-busca");
   return { ok: true };
 }

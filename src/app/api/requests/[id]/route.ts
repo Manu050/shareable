@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { mailRequestAccepted, mailRequestRejected } from "@/lib/mailer";
 
 const PatchSchema = z.object({
   action: z.enum(["accept", "reject"]),
@@ -26,7 +27,10 @@ export async function PATCH(
 
   const request = await prisma.request.findUnique({
     where: { id },
-    include: { item: { select: { ownerId: true } } },
+    include: {
+      item: { select: { ownerId: true, title: true } },
+      borrower: { select: { email: true, name: true } },
+    },
   });
   if (!request) {
     return NextResponse.json({ error: "Reserva no encontrada." }, { status: 404 });
@@ -49,6 +53,12 @@ export async function PATCH(
     data: { status: parsed.data.action === "accept" ? "accepted" : "rejected" },
     select: { id: true, status: true },
   });
+
+  if (parsed.data.action === "accept") {
+    void mailRequestAccepted(request.borrower.email, request.borrower.name, request.item.title, id);
+  } else {
+    void mailRequestRejected(request.borrower.email, request.borrower.name, request.item.title);
+  }
 
   return NextResponse.json({ request: updated });
 }

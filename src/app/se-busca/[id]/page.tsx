@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { format, formatDistanceToNow } from "date-fns";
@@ -42,8 +43,7 @@ export default async function WantedDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params;
-  const session = await auth();
+  const [{ id }, session] = await Promise.all([params, auth()]);
 
   const wanted = await prisma.wantedItem.findUnique({
     where: { id },
@@ -139,10 +139,10 @@ export default async function WantedDetailPage({
       {isOwner ? (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            <WantedActions wantedId={wanted.id} status={wanted.status} />
+            <WantedActions wantedId={wanted.id} status={wanted.status} isOwner={isOwner} />
             <span className="text-xs text-muted-foreground">
               <CalendarPlus className="mr-1 inline size-3.5 -translate-y-px" />
-              "Prorrogar" añade 30 días más a la caducidad.
+              &ldquo;Prorrogar&rdquo; añade 30 días más a la caducidad.
             </span>
           </div>
 
@@ -164,10 +164,15 @@ export default async function WantedDetailPage({
                   return (
                     <Card key={m.id} className="rounded-2xl">
                       <CardHeader className="flex flex-row items-start gap-3">
-                        <div className="size-16 shrink-0 overflow-hidden rounded-xl bg-secondary/40">
+                        <div className="relative size-16 shrink-0 overflow-hidden rounded-xl bg-secondary/40">
                           {cover ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={cover} alt={it.title} className="h-full w-full object-cover" />
+                            <Image
+                              src={cover}
+                              alt={it.title}
+                              fill
+                              sizes="64px"
+                              className="object-cover"
+                            />
                           ) : (
                             <div className="flex h-full w-full items-center justify-center text-primary/60">
                               <PackageOpen className="size-7" />

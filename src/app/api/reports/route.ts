@@ -22,7 +22,7 @@ export async function POST(req: Request) {
   const parsed = ReportSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Datos inválidos." },
+      { error: parsed.error.issues.map((i) => i.message).join(" · ") ?? "Datos inválidos." },
       { status: 400 },
     );
   }
@@ -42,6 +42,19 @@ export async function POST(req: Request) {
     return NextResponse.json(
       { error: "Solo puedes reportar reservas en las que participas." },
       { status: 403 },
+    );
+  }
+
+  // Evita spam: si ya hay un reporte abierto del mismo reporter sobre la misma
+  // request, devolvemos 409 en vez de duplicar la cola del admin.
+  const existing = await prisma.report.findFirst({
+    where: { requestId, reporterId: userId, isResolved: false },
+    select: { id: true },
+  });
+  if (existing) {
+    return NextResponse.json(
+      { error: "Ya enviaste un reporte sobre esta reserva — pendiente de revisión." },
+      { status: 409 },
     );
   }
 

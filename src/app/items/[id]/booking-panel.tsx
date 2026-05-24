@@ -44,13 +44,17 @@ export function BookingPanel({
       return;
     }
     setLoading(true);
+    // Enviamos YYYY-MM-DD (fecha civil), no ISO UTC: evita que un usuario en
+    // Madrid (UTC+2) que elige "10 mayo" llegue al servidor como "9 mayo 22:00Z".
+    const ymd = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     const res = await fetch("/api/requests", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         itemId,
-        startDate: range.from.toISOString(),
-        endDate: range.to.toISOString(),
+        startDate: ymd(range.from),
+        endDate: ymd(range.to),
       }),
     });
     setLoading(false);
@@ -94,7 +98,7 @@ export function BookingPanel({
                   {format(range.to, "d 'de' MMM yyyy", { locale: es })}
                 </span>
               </p>
-              <p className="flex justify-between border-t border-border pt-2">
+              <p className="flex justify-between border-t border-border pt-2 tabular-nums">
                 <span className="text-muted-foreground">
                   {days} {days === 1 ? "día" : "días"}
                   {pricePerDay > 0
@@ -116,7 +120,7 @@ export function BookingPanel({
         </div>
 
         {error && (
-          <p className="w-full rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <p role="alert" className="w-full rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
           </p>
         )}

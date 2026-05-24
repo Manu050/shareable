@@ -5,11 +5,13 @@ import type { RequestStatus } from "@prisma/client";
 
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { mailDoubleCheckComplete } from "@/lib/mailer";
 
 type Result = { ok: true } | { ok: false; error: string };
 
-// Verifica sesión + lee la Request + comprueba rol y estado previo esperado.
-// Encapsula la lógica común para las 4 transiciones del Doble Check.
+// Verifica sesión + rol esperado + ejecuta la transición de forma ATÓMICA
+// (update condicional por estado). Si dos clicks llegan a la vez sólo uno
+// pasa el WHERE, evitando emails duplicados y estados duplicados.
 async function transition(
   requestId: string,
   from: RequestStatus,
@@ -21,9 +23,21 @@ async function transition(
     return { ok: false, error: "No autenticado." };
   }
 
+  // Lectura mínima sólo para resolver roles. La autoridad real está en el
+  // WHERE del updateMany de abajo.
   const request = await prisma.request.findUnique({
     where: { id: requestId },
-    include: { item: { select: { ownerId: true } } },
+    select: {
+      borrowerId: true,
+      item: {
+        select: {
+          ownerId: true,
+          title: true,
+          owner: { select: { email: true, name: true } },
+        },
+      },
+      borrower: { select: { email: true, name: true } },
+    },
   });
   if (!request) {
     return { ok: false, error: "Reserva no encontrada." };
@@ -39,15 +53,29 @@ async function transition(
   if (who === "borrower" && !isBorrower) {
     return { ok: false, error: "Solo el receptor puede realizar esta acción." };
   }
-  if (request.status !== from) {
+
+  // Update atómico: la condición `status: from` actúa como CAS (compare-and-set).
+  const result = await prisma.request.updateMany({
+    where: { id: requestId, status: from },
+    data: { status: to },
+  });
+  if (result.count !== 1) {
     return { ok: false, error: "El préstamo no está en el estado esperado." };
   }
 
-  await prisma.request.update({
-    where: { id: requestId },
-    data: { status: to },
-  });
   revalidatePath("/dashboard");
+
+  // Notificaciones — sólo si la transición efectivamente ocurrió (count===1).
+  if (to === "in_progress") {
+    const title = request.item.title;
+    void mailDoubleCheckComplete(request.item.owner.email, request.item.owner.name, title, "delivered");
+    void mailDoubleCheckComplete(request.borrower.email, request.borrower.name, title, "delivered");
+  } else if (to === "completed") {
+    const title = request.item.title;
+    void mailDoubleCheckComplete(request.item.owner.email, request.item.owner.name, title, "returned");
+    void mailDoubleCheckComplete(request.borrower.email, request.borrower.name, title, "returned");
+  }
+
   return { ok: true };
 }
 

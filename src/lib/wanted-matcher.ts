@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
+import { mailNewMatch } from "@/lib/mailer";
 
 // Funciones de match entre WantedItem (peticiones) e Item (objetos).
 // La consulta usa PostGIS `ST_DWithin` con la columna `radius_m` de la
@@ -78,5 +79,40 @@ export async function persistMatches(
     data: pairs,
     skipDuplicates: true,
   });
+
+  // Notify requesters about new matches (fire-and-forget, one email per wanted item).
+  if (result.count > 0) {
+    const uniqueWantedIds = [...new Set(pairs.map((p) => p.wantedItemId))];
+    const allItemIds = [...new Set(pairs.map((p) => p.itemId))];
+
+    const [wanteds, items] = await Promise.all([
+      prisma.wantedItem.findMany({
+        where: { id: { in: uniqueWantedIds } },
+        select: {
+          id: true,
+          title: true,
+          requester: { select: { email: true, name: true } },
+        },
+      }),
+      prisma.item.findMany({
+        where: { id: { in: allItemIds } },
+        select: { id: true, title: true },
+      }),
+    ]);
+
+    const itemMap = new Map(items.map((i) => [i.id, i.title]));
+    // Pre-indexamos pairs por wantedItemId para evitar un find() O(n) por loop.
+    const firstItemFor = new Map<string, string>();
+    for (const p of pairs) {
+      if (!firstItemFor.has(p.wantedItemId)) firstItemFor.set(p.wantedItemId, p.itemId);
+    }
+
+    for (const w of wanteds) {
+      const matchedItemId = firstItemFor.get(w.id);
+      const itemTitle = matchedItemId ? (itemMap.get(matchedItemId) ?? "un objeto") : "un objeto";
+      void mailNewMatch(w.requester.email, w.requester.name, w.title, itemTitle, w.id);
+    }
+  }
+
   return result.count;
 }

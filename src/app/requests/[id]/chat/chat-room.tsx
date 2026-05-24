@@ -136,6 +136,7 @@ export function ChatRoom({
                         mine ? "text-primary-foreground/80" : "text-muted-foreground",
                       )}
                       title={format(ts, "PPpp", { locale: es })}
+                      suppressHydrationWarning
                     >
                       {formatRelative(ts, new Date(), { locale: es })}
                     </p>
@@ -187,7 +188,7 @@ export function ChatRoom({
           </span>
         </div>
         {error && (
-          <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
           </p>
         )}

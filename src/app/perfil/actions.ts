@@ -27,7 +27,7 @@ export async function updateProfile(input: unknown): Promise<Result> {
   if (!parsed.success) {
     return {
       ok: false,
-      error: parsed.error.issues[0]?.message ?? "Datos inválidos.",
+      error: parsed.error.issues.map((i) => i.message).join(" · ") ?? "Datos inválidos.",
     };
   }
 
@@ -38,6 +38,19 @@ export async function updateProfile(input: unknown): Promise<Result> {
     select: { image: true },
   });
 
+  // Anti-hijacking: si la URL de avatar ya pertenece a OTRO usuario, rechaza.
+  // Los UUIDs son aleatorios — la única forma de conocer una URL ajena es ver
+  // su perfil público y copiarla. Bloqueamos ese escenario.
+  if (parsed.data.image && parsed.data.image !== current?.image) {
+    const collision = await prisma.user.findFirst({
+      where: { image: parsed.data.image, NOT: { id: userId } },
+      select: { id: true },
+    });
+    if (collision) {
+      return { ok: false, error: "Esa imagen no está disponible." };
+    }
+  }
+
   await prisma.user.update({
     where: { id: userId },
     data: {
@@ -47,10 +60,13 @@ export async function updateProfile(input: unknown): Promise<Result> {
     },
   });
 
-  // Cleanup: si el avatar anterior era nuestro (URL del propio sistema) y ha
-  // cambiado, lo borramos del disco.
+  // Cleanup: borrar el avatar anterior sólo si nadie más lo referencia.
   if (current?.image && current.image !== parsed.data.image) {
-    await deleteUpload(current.image);
+    const stillUsed = await prisma.user.findFirst({
+      where: { image: current.image },
+      select: { id: true },
+    });
+    if (!stillUsed) await deleteUpload(current.image);
   }
 
   revalidatePath("/perfil");
