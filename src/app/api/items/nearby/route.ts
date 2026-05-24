@@ -54,13 +54,7 @@ export async function GET(req: Request) {
       LEFT(i.description, 240) AS description,
       i.category,
       i.price_per_day,
-      (
-        SELECT ii.url
-        FROM item_images ii
-        WHERE ii.item_id = i.id
-        ORDER BY ii.position ASC
-        LIMIT 1
-      ) AS cover_url,
+      cover.url AS cover_url,
       i.latitude,
       i.longitude,
       ST_Distance(
@@ -71,6 +65,16 @@ export async function GET(req: Request) {
       u.avatar_url AS owner_image
     FROM items i
     JOIN users u ON u.id = i.owner_id
+    -- LATERAL evita la subquery correlacionada por fila. Postgres planifica
+    -- un index scan único sobre item_images(item_id, position) que es O(log n)
+    -- por item en lugar de O(n_images_de_ese_item).
+    LEFT JOIN LATERAL (
+      SELECT ii.url
+      FROM item_images ii
+      WHERE ii.item_id = i.id
+      ORDER BY ii.position ASC
+      LIMIT 1
+    ) AS cover ON true
     WHERE i.is_active = true
       ${radiusClause}
     ORDER BY distance_m ASC

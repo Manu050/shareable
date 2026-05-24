@@ -163,6 +163,11 @@ model Request {
 
   @@index([itemId])
   @@index([borrowerId])
+  // Índices compuestos para las queries del dashboard, que filtran por
+  // owner/borrower + status y ordenan por createdAt desc. Cubren tanto
+  // outgoingActive/History como incomingActive/History.
+  @@index([borrowerId, status, createdAt(sort: Desc)])
+  @@index([itemId, status, createdAt(sort: Desc)])
   @@map("requests")
 }
 
