@@ -106,24 +106,7 @@ export class UploadError extends Error {
   }
 }
 
-// ─── Rate limiter en memoria ────────────────────────────────────────────────
-// Mapa userId → ventana deslizante de timestamps. Para el MVP single-process
-// con PM2 es suficiente; tras escalar a varios workers habrá que mover esto
-// a Redis o a una columna en BD.
-const UPLOAD_LIMIT = 30; // máximo 30 uploads
-const UPLOAD_WINDOW_MS = 60 * 60 * 1000; // por hora rodante
-const uploadWindow = new Map<string, number[]>();
-
-export function checkUploadRate(userId: string): { ok: true } | { ok: false; retryAfter: number } {
-  const now = Date.now();
-  const cutoff = now - UPLOAD_WINDOW_MS;
-  const stamps = (uploadWindow.get(userId) ?? []).filter((t) => t > cutoff);
-  if (stamps.length >= UPLOAD_LIMIT) {
-    const retryAfter = Math.ceil((stamps[0] + UPLOAD_WINDOW_MS - now) / 1000);
-    uploadWindow.set(userId, stamps);
-    return { ok: false, retryAfter };
-  }
-  stamps.push(now);
-  uploadWindow.set(userId, stamps);
-  return { ok: true };
-}
+// El rate-limit de uploads vive ahora en `@/lib/rate-limit` (persistente en
+// BD). Lo invoca directamente la ruta `/api/uploads`.
+export const UPLOAD_LIMIT = 30; // máximo 30 uploads por hora por usuario
+export const UPLOAD_WINDOW_MS = 60 * 60 * 1000;

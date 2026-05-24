@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { auth } from "@/lib/auth";
+import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 
 // Proxy server-side para Nominatim. Razones:
 //  1. Nominatim exige `User-Agent` identificable (TOS) — el navegador no
@@ -23,23 +24,10 @@ const USER_AGENT =
   process.env.GEOCODER_USER_AGENT ?? "Shareable/1.0 (https://shareable.local)";
 
 // Rate-limit por IP: Nominatim permite ~1 rps absoluto. Limitamos a 30 req/min
-// por IP cliente. En realidad da igual quién pregunte, lo que NO podemos es
-// pasar de 1 rps total. Coordinarlo es responsabilidad del front (debounce).
-const ipWindow = new Map<string, number[]>();
-const LIMIT = 30;
-const WINDOW = 60_000;
-function ok(ip: string): boolean {
-  const now = Date.now();
-  const cut = now - WINDOW;
-  const arr = (ipWindow.get(ip) ?? []).filter((t) => t > cut);
-  if (arr.length >= LIMIT) {
-    ipWindow.set(ip, arr);
-    return false;
-  }
-  arr.push(now);
-  ipWindow.set(ip, arr);
-  return true;
-}
+// por IP cliente (el front ya hace debounce 800ms). Persistido en BD vía
+// `checkRateLimit` para sobrevivir a restarts de PM2.
+const GEOCODE_LIMIT = 30;
+const GEOCODE_WINDOW_MS = 60_000;
 
 export async function GET(req: Request) {
   // Sólo autenticados — evita que el endpoint sea un proxy abierto.
@@ -48,9 +36,13 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 });
   }
 
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
-  if (!ok(ip)) {
-    return NextResponse.json({ error: "Demasiadas búsquedas." }, { status: 429 });
+  const ip = clientIp(req);
+  const limit = await checkRateLimit("geocode", ip, GEOCODE_LIMIT, GEOCODE_WINDOW_MS);
+  if (!limit.ok) {
+    return NextResponse.json(
+      { error: "Demasiadas búsquedas." },
+      { status: 429, headers: { "Retry-After": String(limit.retryAfter) } },
+    );
   }
 
   const url = new URL(req.url);

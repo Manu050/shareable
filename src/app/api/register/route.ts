@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { prisma } from "@/lib/prisma";
+import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 
 const RegisterSchema = z.object({
   name: z.string().trim().min(2, "El nombre debe tener al menos 2 caracteres."),
@@ -13,38 +14,16 @@ const RegisterSchema = z.object({
     .max(128),
 });
 
-// Rate-limit en memoria por IP. Para PM2 single-process es suficiente; con
-// múltiples workers o tras un proxy hay que mover esto a Redis y leer la IP
-// real de `x-forwarded-for` (que el proxy debe poner).
-const REGISTER_LIMIT = 5; // 5 intentos
-const REGISTER_WINDOW_MS = 60 * 60 * 1000; // por hora
-const ipWindow = new Map<string, number[]>();
-
-function clientIp(req: Request): string {
-  const fwd = req.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0]!.trim();
-  return req.headers.get("x-real-ip") ?? "unknown";
-}
-
-function checkRate(ip: string): boolean {
-  const now = Date.now();
-  const cutoff = now - REGISTER_WINDOW_MS;
-  const stamps = (ipWindow.get(ip) ?? []).filter((t) => t > cutoff);
-  if (stamps.length >= REGISTER_LIMIT) {
-    ipWindow.set(ip, stamps);
-    return false;
-  }
-  stamps.push(now);
-  ipWindow.set(ip, stamps);
-  return true;
-}
+const REGISTER_LIMIT = 5; // 5 intentos por hora por IP
+const REGISTER_WINDOW_MS = 60 * 60 * 1000;
 
 export async function POST(req: Request) {
   const ip = clientIp(req);
-  if (!checkRate(ip)) {
+  const limit = await checkRateLimit("register", ip, REGISTER_LIMIT, REGISTER_WINDOW_MS);
+  if (!limit.ok) {
     return NextResponse.json(
       { error: "Demasiados intentos. Inténtalo más tarde." },
-      { status: 429 },
+      { status: 429, headers: { "Retry-After": String(limit.retryAfter) } },
     );
   }
 

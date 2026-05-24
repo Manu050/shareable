@@ -267,6 +267,19 @@ model Conversation {
   @@map("conversations")
 }
 
+// Limitador de tasa persistente. Reemplaza Map en memoria (no sobrevivía a
+// restart de PM2 / cluster). Una fila por `<scope>:<subject>`. La columna
+// `window_end` marca el cierre de la ventana actual; al hacer hit en una
+// expirada se reinicia (count=1, ventana nueva).
+model RateLimitBucket {
+  key       String   @id
+  windowEnd DateTime @map("window_end") @db.Timestamptz(6)
+  count     Int      @default(0)
+
+  @@index([windowEnd])
+  @@map("rate_limit_buckets")
+}
+
 model DirectMessage {
   id             String    @id @default(uuid()) @db.Uuid
   conversationId String    @map("conversation_id") @db.Uuid
