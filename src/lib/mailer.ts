@@ -1,5 +1,7 @@
 import nodemailer from "nodemailer";
 
+import { prisma } from "@/lib/prisma";
+
 // Lazily created transporter. Skips sending if SMTP_HOST is not set (dev without mail).
 let _transporter: nodemailer.Transporter | null = null;
 
@@ -48,11 +50,42 @@ type MailPayload = {
   to: string;
   subject: string;
   html: string;
+  // `kind` identifica el tipo de mail para auditoría (request-new, dm-message,
+  // wanted-match, etc.). Permite filtrar fallos por categoría en admin.
+  kind: string;
 };
+
+// Grabar un fallo NUNCA debe romper el flujo de la app. Si la BD también está
+// caída en este momento, escupimos a stderr y seguimos.
+async function logMailFailure(
+  payload: MailPayload,
+  status: "failed" | "skipped",
+  error?: string,
+) {
+  try {
+    await prisma.mailAttempt.create({
+      data: {
+        recipient: payload.to,
+        subject: safeSubject(payload.subject).slice(0, 255),
+        kind: payload.kind,
+        status,
+        error: error?.slice(0, 2000) ?? null,
+      },
+    });
+  } catch (dbErr) {
+    console.error("[mailer] could not persist mail attempt:", dbErr);
+  }
+}
 
 async function send(payload: MailPayload) {
   const t = getTransporter();
-  if (!t) return; // SMTP not configured — silently skip in dev.
+  if (!t) {
+    // SMTP no configurado (dev sin mail). Registramos como "skipped" para que
+    // un admin pueda detectar si en prod se olvidó setear SMTP_HOST.
+    console.warn(`[mailer] SMTP not configured, skipping "${payload.kind}" to ${payload.to}`);
+    void logMailFailure(payload, "skipped");
+    return;
+  }
   try {
     await t.sendMail({
       from: FROM,
@@ -61,7 +94,9 @@ async function send(payload: MailPayload) {
       html: payload.html,
     });
   } catch (err) {
-    console.error("[mailer] send error:", err);
+    const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    console.error(`[mailer] send error (kind=${payload.kind}, to=${payload.to}):`, msg);
+    void logMailFailure(payload, "failed", msg);
   }
 }
 
@@ -106,6 +141,7 @@ export async function mailNewRequest(
 ) {
   await send({
     to: ownerEmail,
+    kind: "request-new",
     subject: `Nueva solicitud para "${itemTitle}" — Shareable`,
     html: template(
       "Tienes una nueva solicitud",
@@ -124,6 +160,7 @@ export async function mailRequestAccepted(
 ) {
   await send({
     to: borrowerEmail,
+    kind: "request-accepted",
     subject: `¡Tu solicitud para "${itemTitle}" ha sido aceptada! — Shareable`,
     html: template(
       "Solicitud aceptada",
@@ -141,6 +178,7 @@ export async function mailRequestRejected(
 ) {
   await send({
     to: borrowerEmail,
+    kind: "request-rejected",
     subject: `Tu solicitud para "${itemTitle}" no ha sido aceptada — Shareable`,
     html: template(
       "Solicitud no aceptada",
@@ -158,6 +196,7 @@ export async function mailNewMessage(
 ) {
   await send({
     to: recipientEmail,
+    kind: "chat-message",
     subject: `Nuevo mensaje de ${senderName ?? "un vecino"} — Shareable`,
     html: template(
       "Tienes un mensaje nuevo",
@@ -177,6 +216,7 @@ export async function mailNewMatch(
 ) {
   await send({
     to: requesterEmail,
+    kind: "wanted-match",
     subject: `¡Coincidencia encontrada para "${wantedTitle}"! — Shareable`,
     html: template(
       "Encontramos algo que buscas",
@@ -197,6 +237,7 @@ export async function mailDoubleCheckComplete(
   const safeItem = escapeHtml(itemTitle);
   await send({
     to: email,
+    kind: isDelivered ? "double-check-delivered" : "double-check-returned",
     subject: `${isDelivered ? "Entrega confirmada" : "Devolución confirmada"}: "${itemTitle}" — Shareable`,
     html: template(
       isDelivered ? "Entrega confirmada" : "Devolución confirmada",

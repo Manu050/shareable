@@ -267,6 +267,28 @@ model Conversation {
   @@map("conversations")
 }
 
+// Registro de intentos de envío de email — sólo fallos (los OK no se guardan
+// para no inflar BD). Permite a un admin auditar correos perdidos y, en una
+// futura iteración, alimentar un worker de reintentos. No es un outbox
+// completo: si SMTP cae, el mail original se pierde — pero queda traza.
+enum MailStatus {
+  failed
+  skipped
+}
+
+model MailAttempt {
+  id        String     @id @default(uuid()) @db.Uuid
+  recipient String
+  subject   String     @db.VarChar(255)
+  kind      String     @db.VarChar(64)
+  status    MailStatus
+  error     String?
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([status, createdAt])
+  @@map("mail_attempts")
+}
+
 // Limitador de tasa persistente. Reemplaza Map en memoria (no sobrevivía a
 // restart de PM2 / cluster). Una fila por `<scope>:<subject>`. La columna
 // `window_end` marca el cierre de la ventana actual; al hacer hit en una
